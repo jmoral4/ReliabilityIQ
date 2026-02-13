@@ -14,6 +14,7 @@ public sealed class WebPhase2IntegrationTests : IDisposable
 {
     private readonly string _tempDir;
     private readonly string _dbPath;
+    private readonly string _baselineRunId;
     private readonly string _runId;
     private long _fileId;
 
@@ -22,6 +23,7 @@ public sealed class WebPhase2IntegrationTests : IDisposable
         _tempDir = Path.Combine(Path.GetTempPath(), "riq-web-tests-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(_tempDir);
         _dbPath = Path.Combine(_tempDir, "results.db");
+        _baselineRunId = "run-web-0";
         _runId = "run-web-1";
     }
 
@@ -40,6 +42,10 @@ public sealed class WebPhase2IntegrationTests : IDisposable
         var magicStrings = await client.GetAsync($"/run/{Uri.EscapeDataString(_runId)}/magic-strings");
         var heatmap = await client.GetAsync($"/run/{Uri.EscapeDataString(_runId)}/heatmap");
         var churn = await client.GetAsync($"/run/{Uri.EscapeDataString(_runId)}/churn");
+        var suppressions = await client.GetAsync($"/run/{Uri.EscapeDataString(_runId)}/suppressions");
+        var export = await client.GetAsync($"/run/{Uri.EscapeDataString(_runId)}/export");
+        var compare = await client.GetAsync($"/run/{Uri.EscapeDataString(_runId)}/compare");
+        var rules = await client.GetAsync("/rules");
         var fileDetail = await client.GetAsync($"/run/{Uri.EscapeDataString(_runId)}/file/{_fileId}");
 
         Assert.Equal(HttpStatusCode.OK, home.StatusCode);
@@ -49,6 +55,10 @@ public sealed class WebPhase2IntegrationTests : IDisposable
         Assert.Equal(HttpStatusCode.OK, magicStrings.StatusCode);
         Assert.Equal(HttpStatusCode.OK, heatmap.StatusCode);
         Assert.Equal(HttpStatusCode.OK, churn.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, suppressions.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, export.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, compare.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, rules.StatusCode);
         Assert.Equal(HttpStatusCode.OK, fileDetail.StatusCode);
     }
 
@@ -329,9 +339,128 @@ public sealed class WebPhase2IntegrationTests : IDisposable
         Assert.Equal(JsonValueKind.Array, detailsRoot.GetProperty("topRules").ValueKind);
     }
 
+    [Fact]
+    public async Task RulesApis_ReturnCatalogAndFindingsAcrossRuns()
+    {
+        await SeedDatabaseAsync();
+
+        using var factory = new TestWebApplicationFactory(_dbPath);
+        using var client = factory.CreateClient();
+
+        var rulesResponse = await client.GetAsync("/api/rules?category=portability");
+        var findingsResponse = await client.GetAsync("/api/rules/portability.hardcoded.dns/findings");
+
+        Assert.Equal(HttpStatusCode.OK, rulesResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, findingsResponse.StatusCode);
+
+        using var rulesJson = JsonDocument.Parse(await rulesResponse.Content.ReadAsStringAsync());
+        var rulesRoot = rulesJson.RootElement;
+        Assert.Equal(JsonValueKind.Array, rulesRoot.ValueKind);
+        Assert.True(rulesRoot.GetArrayLength() >= 1);
+        var portabilityDns = rulesRoot.EnumerateArray()
+            .First(item => item.GetProperty("ruleId").GetString() == "portability.hardcoded.dns");
+        Assert.Equal("portability", portabilityDns.GetProperty("category").GetString());
+        Assert.Equal("Overridden", portabilityDns.GetProperty("effectiveState").GetString());
+
+        using var findingsJson = JsonDocument.Parse(await findingsResponse.Content.ReadAsStringAsync());
+        var findingsRoot = findingsJson.RootElement;
+        Assert.Equal(JsonValueKind.Array, findingsRoot.ValueKind);
+        Assert.True(findingsRoot.GetArrayLength() >= 1);
+    }
+
+    [Fact]
+    public async Task SuppressionsApi_ReturnsOverviewAndSuppressedRows()
+    {
+        await SeedDatabaseAsync();
+
+        using var factory = new TestWebApplicationFactory(_dbPath);
+        using var client = factory.CreateClient();
+
+        var response = await client.GetAsync($"/api/run/{Uri.EscapeDataString(_runId)}/suppressions");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var root = json.RootElement;
+        Assert.Equal(_runId, root.GetProperty("runId").GetString());
+        Assert.True(root.GetProperty("suppressedFindings").GetInt64() >= 1);
+        Assert.True(root.GetProperty("whatIfTotalFindings").GetInt64() > root.GetProperty("activeFindings").GetInt64());
+
+        var items = root.GetProperty("items");
+        Assert.Equal(JsonValueKind.Array, items.ValueKind);
+        var first = items.EnumerateArray().First();
+        Assert.Equal("allowlist", first.GetProperty("suppressionSource").GetString());
+    }
+
+    [Fact]
+    public async Task ExportApi_ReturnsCsvJsonSarifAndHtml()
+    {
+        await SeedDatabaseAsync();
+
+        using var factory = new TestWebApplicationFactory(_dbPath);
+        using var client = factory.CreateClient();
+
+        var csv = await client.GetAsync($"/api/run/{Uri.EscapeDataString(_runId)}/export/csv?rulePrefix=deploy.");
+        var json = await client.GetAsync($"/api/run/{Uri.EscapeDataString(_runId)}/export/json?rulePrefix=deploy.");
+        var sarif = await client.GetAsync($"/api/run/{Uri.EscapeDataString(_runId)}/export/sarif?rulePrefix=deploy.");
+        var html = await client.GetAsync($"/api/run/{Uri.EscapeDataString(_runId)}/export/html?rulePrefix=deploy.");
+
+        Assert.Equal(HttpStatusCode.OK, csv.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, json.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, sarif.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, html.StatusCode);
+
+        var csvText = await csv.Content.ReadAsStringAsync();
+        Assert.Contains("findingId,runId,ruleId", csvText, StringComparison.Ordinal);
+        Assert.Contains("deploy.ev2.inline_secret", csvText, StringComparison.Ordinal);
+
+        using var jsonDoc = JsonDocument.Parse(await json.Content.ReadAsStringAsync());
+        Assert.True(jsonDoc.RootElement.TryGetProperty("metadata", out _));
+        Assert.True(jsonDoc.RootElement.TryGetProperty("findings", out var jsonFindings));
+        Assert.True(jsonFindings.GetArrayLength() >= 1);
+
+        using var sarifDoc = JsonDocument.Parse(await sarif.Content.ReadAsStringAsync());
+        Assert.Equal("2.1.0", sarifDoc.RootElement.GetProperty("version").GetString());
+        Assert.True(sarifDoc.RootElement.TryGetProperty("runs", out var runs));
+        Assert.True(runs.GetArrayLength() == 1);
+
+        var htmlText = await html.Content.ReadAsStringAsync();
+        Assert.Contains("<!doctype html>", htmlText, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("ReliabilityIQ Report", htmlText, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task CompareApi_ReturnsNewFixedAndUnchanged()
+    {
+        await SeedDatabaseAsync();
+
+        using var factory = new TestWebApplicationFactory(_dbPath);
+        using var client = factory.CreateClient();
+
+        var response = await client.GetAsync(
+            $"/api/runs/compare?baselineRunId={Uri.EscapeDataString(_baselineRunId)}&targetRunId={Uri.EscapeDataString(_runId)}");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var root = json.RootElement;
+        Assert.True(root.GetProperty("newCount").GetInt64() >= 1);
+        Assert.True(root.GetProperty("fixedCount").GetInt64() >= 1);
+        Assert.True(root.GetProperty("unchangedCount").GetInt64() >= 1);
+        Assert.True(root.GetProperty("newFindings").GetArrayLength() >= 1);
+        Assert.True(root.GetProperty("fixedFindings").GetArrayLength() >= 1);
+    }
+
     private async Task SeedDatabaseAsync()
     {
         var writer = new SqliteResultsWriter(_dbPath);
+        var baselineRun = new ScanRun(
+            RunId: _baselineRunId,
+            RepoRoot: "/repo",
+            CommitSha: "base123",
+            StartedAt: DateTimeOffset.UtcNow.AddMinutes(-10),
+            EndedAt: DateTimeOffset.UtcNow.AddMinutes(-9),
+            ToolVersion: "0.1.0",
+            ConfigHash: null);
+
         var run = new ScanRun(
             RunId: _runId,
             RepoRoot: "/repo",
@@ -362,8 +491,22 @@ public sealed class WebPhase2IntegrationTests : IDisposable
                 Snippet = "service.core.windows.net",
                 Severity = FindingSeverity.Warning,
                 Confidence = FindingConfidence.High,
-                Fingerprint = "fp-web-1",
+                Fingerprint = "fp-shared-1",
                 Metadata = """{"engine":"roslyn","astConfirmed":true,"callsite":"HttpClient.GetAsync","context":"InvocationExpression"}"""
+            },
+            new()
+            {
+                RunId = _runId,
+                RuleId = "portability.hardcoded.dns",
+                FilePath = "src/program.cs",
+                Line = 30,
+                Column = 18,
+                Message = "Hardcoded DNS endpoint escalated for critical path.",
+                Snippet = "critical.service.windows.net",
+                Severity = FindingSeverity.Error,
+                Confidence = FindingConfidence.High,
+                Fingerprint = "fp-override-1",
+                Metadata = """{"engine":"regex","ruleVersion":"1.0.0"}"""
             },
             new()
             {
@@ -376,8 +519,8 @@ public sealed class WebPhase2IntegrationTests : IDisposable
                 Snippet = "management.azure.com",
                 Severity = FindingSeverity.Warning,
                 Confidence = FindingConfidence.Medium,
-                Fingerprint = "fp-web-2",
-                Metadata = """{"engine":"regex","suppressed":true,"suppressionReason":"fixture"}"""
+                Fingerprint = "fp-new-1",
+                Metadata = """{"engine":"regex","suppressed":true,"suppressionReason":"fixture","suppressionSource":"allowlist"}"""
             },
             new()
             {
@@ -444,7 +587,8 @@ public sealed class WebPhase2IntegrationTests : IDisposable
             new("magic-string.comparison-used", "Comparison-driven magic string", FindingSeverity.Info, "Extract to enum or constant."),
             new("magic-string.candidate", "Magic string candidate", FindingSeverity.Info, "Promote to configuration or typed constant."),
             new("deploy.ev2.hardcoded.subscription", "EV2 Hardcoded Subscription", FindingSeverity.Warning, "Parameterize subscription identifiers in EV2 artifacts instead of hardcoding concrete values."),
-            new("deploy.ev2.inline_secret", "EV2 Inline Secret", FindingSeverity.Error, "Replace inline secrets in EV2 artifacts with Key Vault references or secure variable resolution.")
+            new("deploy.ev2.inline_secret", "EV2 Inline Secret", FindingSeverity.Error, "Replace inline secrets in EV2 artifacts with Key Vault references or secure variable resolution."),
+            new("custom.dormant.rule", "Dormant Custom Rule", FindingSeverity.Info, "No findings expected for this test rule.")
         };
 
         var gitMetrics = new List<GitFileMetric>
@@ -496,6 +640,58 @@ public sealed class WebPhase2IntegrationTests : IDisposable
                 TopAuthorPct: 0.42d)
         };
 
+        var baselineFindings = new List<Finding>
+        {
+            new()
+            {
+                RunId = _baselineRunId,
+                RuleId = "portability.hardcoded.dns",
+                FilePath = "src/program.cs",
+                Line = 11,
+                Column = 20,
+                Message = "Hardcoded DNS endpoint detected.",
+                Snippet = "service.core.windows.net",
+                Severity = FindingSeverity.Warning,
+                Confidence = FindingConfidence.High,
+                Fingerprint = "fp-shared-1",
+                Metadata = """{"engine":"roslyn","astConfirmed":true}"""
+            },
+            new()
+            {
+                RunId = _baselineRunId,
+                RuleId = "magic-string.candidate",
+                FilePath = "src/payments/gateway.cs",
+                Line = 18,
+                Column = 20,
+                Message = "Magic string candidate 'pending_review' score=2.0 occurrences=2.",
+                Snippet = "if (state == \"pending_review\")",
+                Severity = FindingSeverity.Info,
+                Confidence = FindingConfidence.Medium,
+                Fingerprint = "fp-fixed-1",
+                Metadata = """{"strategy":"exclude-detect-score-threshold"}"""
+            }
+        };
+
+        var baselineGitMetrics = new List<GitFileMetric>
+        {
+            new(
+                FilePath: "src/program.cs",
+                LastCommitAt: DateTimeOffset.UtcNow.AddDays(-18),
+                Commits30d: 1,
+                Commits90d: 3,
+                Commits180d: 5,
+                Commits365d: 8,
+                Authors365d: 2,
+                OwnershipConcentration: 0.62d,
+                LinesAdded365d: 180,
+                LinesRemoved365d: 40,
+                ChurnScore: 3.2d,
+                StaleScore: 18d,
+                TopAuthor: "alice@example.com",
+                TopAuthorPct: 0.62d)
+        };
+
+        await writer.WriteAsync(baselineRun, files, baselineFindings, rules, baselineGitMetrics);
         await writer.WriteAsync(run, files, findings, rules, gitMetrics);
 
         await using var connection = new SqliteConnection(new SqliteConnectionStringBuilder

@@ -17,6 +17,8 @@ public static class Program
         scan.AddCommand(CreateMagicStringsCommand());
         scan.AddCommand(CreateChurnCommand());
         scan.AddCommand(CreateDeployCommand());
+        scan.AddCommand(CreateConfigDriftCommand());
+        scan.AddCommand(CreateDependenciesCommand());
         scan.AddCommand(CreateAllScansCommand());
         root.AddCommand(scan);
 
@@ -268,6 +270,60 @@ public static class Program
         return command;
     }
 
+    private static Command CreateConfigDriftCommand()
+    {
+        var command = new Command("config-drift", "Run configuration drift scan and persist findings to SQLite");
+
+        var repoOption = new Option<DirectoryInfo>("--repo", "Repository path to scan")
+        {
+            IsRequired = true
+        };
+
+        var dbOption = new Option<FileInfo?>("--db", "SQLite database file path (default: <repo-root>/reliabilityiq-results.db)");
+
+        command.AddOption(repoOption);
+        command.AddOption(dbOption);
+
+        command.SetHandler(async (repo, db) =>
+        {
+            var options = new ConfigDriftScanOptions(
+                RepoPath: repo.FullName,
+                DatabasePath: db?.FullName);
+
+            var exitCode = await ConfigDriftScanRunner.ExecuteAsync(options, Console.Out, CancellationToken.None).ConfigureAwait(false);
+            Environment.ExitCode = exitCode;
+        }, repoOption, dbOption);
+
+        return command;
+    }
+
+    private static Command CreateDependenciesCommand()
+    {
+        var command = new Command("deps", "Run dependency freshness/vulnerability scan and persist findings to SQLite");
+
+        var repoOption = new Option<DirectoryInfo>("--repo", "Repository path to scan")
+        {
+            IsRequired = true
+        };
+
+        var dbOption = new Option<FileInfo?>("--db", "SQLite database file path (default: <repo-root>/reliabilityiq-results.db)");
+
+        command.AddOption(repoOption);
+        command.AddOption(dbOption);
+
+        command.SetHandler(async (repo, db) =>
+        {
+            var options = new DependenciesScanOptions(
+                RepoPath: repo.FullName,
+                DatabasePath: db?.FullName);
+
+            var exitCode = await DependenciesScanRunner.ExecuteAsync(options, Console.Out, cancellationToken: CancellationToken.None).ConfigureAwait(false);
+            Environment.ExitCode = exitCode;
+        }, repoOption, dbOption);
+
+        return command;
+    }
+
     private static Command CreateRulesValidateCommand()
     {
         var command = new Command("validate", "Validate rule and allowlist configuration");
@@ -298,7 +354,7 @@ public static class Program
         var command = new Command("list", "List effective merged rules");
         var configOption = new Option<DirectoryInfo?>("--config", "Path to repo root or .reliabilityiq directory.");
         var enabledOnlyOption = new Option<bool>("--enabled-only", "Only list enabled rules.");
-        var categoryOption = new Option<string?>("--category", "Filter category (portability, magic-strings, churn, deploy-ev2, deploy-ado, incidents, custom).");
+        var categoryOption = new Option<string?>("--category", "Filter category (portability, magic-strings, churn, deploy-ev2, deploy-ado, config-drift, dependencies, incidents, custom).");
 
         command.AddOption(configOption);
         command.AddOption(enabledOnlyOption);

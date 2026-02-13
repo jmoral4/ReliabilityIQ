@@ -53,7 +53,6 @@ public sealed class GitHistoryAnalyzer : IAnalyzer
         var now = DateTimeOffset.UtcNow;
         var windowStart = now.AddDays(-options.SinceDays);
 
-        var trackedSet = normalizedInputs.Select(f => f.FilePath).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var byPath = normalizedInputs.ToDictionary(f => f.FilePath, f => new FileAccumulator(f.FilePath, f.Category), StringComparer.OrdinalIgnoreCase);
         var processedWorkItems = 0;
         var lastReportedPercent = -1;
@@ -70,48 +69,41 @@ public sealed class GitHistoryAnalyzer : IAnalyzer
             cancellationToken.ThrowIfCancellationRequested();
             var commitWhen = commit.Author.When;
 
+            var author = string.IsNullOrWhiteSpace(commit.Author.Email)
+                ? commit.Author.Name.Trim()
+                : commit.Author.Email.Trim();
             var parent = commit.Parents.FirstOrDefault();
-            var treeChanges = parent is null
-                ? repository.Diff.Compare<TreeChanges>(null, commit.Tree)
-                : repository.Diff.Compare<TreeChanges>(parent.Tree, commit.Tree);
-
-            Patch? patch = null;
             if (options.IncludeDiffStats)
             {
-                patch = parent is null
+                var patch = parent is null
                     ? repository.Diff.Compare<Patch>(null, commit.Tree)
                     : repository.Diff.Compare<Patch>(parent.Tree, commit.Tree);
-            }
 
-            foreach (var change in treeChanges)
-            {
-                var candidatePaths = EnumerateCandidatePaths(change).ToArray();
-                var matchPath = candidatePaths.FirstOrDefault(path => trackedSet.Contains(path));
-                if (matchPath is null)
+                foreach (var patchEntry in patch)
                 {
-                    continue;
-                }
+                    if (!TryResolveTrackedAccumulator(byPath, patchEntry.Path, patchEntry.OldPath, out var accumulator))
+                    {
+                        continue;
+                    }
 
-                if (!byPath.TryGetValue(matchPath, out var accumulator))
-                {
-                    continue;
-                }
-
-                var author = string.IsNullOrWhiteSpace(commit.Author.Email)
-                    ? commit.Author.Name.Trim()
-                    : commit.Author.Email.Trim();
-
-                accumulator.RecordCommit(commitWhen, author, now);
-
-                if (patch is null)
-                {
-                    continue;
-                }
-
-                var patchEntry = FindPatchEntry(patch, candidatePaths);
-                if (patchEntry is not null)
-                {
+                    accumulator.RecordCommit(commitWhen, author, now);
                     accumulator.AddLines(patchEntry.LinesAdded, patchEntry.LinesDeleted);
+                }
+            }
+            else
+            {
+                var treeChanges = parent is null
+                    ? repository.Diff.Compare<TreeChanges>(null, commit.Tree)
+                    : repository.Diff.Compare<TreeChanges>(parent.Tree, commit.Tree);
+
+                foreach (var change in treeChanges)
+                {
+                    if (!TryResolveTrackedAccumulator(byPath, change.Path, change.OldPath, out var accumulator))
+                    {
+                        continue;
+                    }
+
+                    accumulator.RecordCommit(commitWhen, author, now);
                 }
             }
 
@@ -296,34 +288,29 @@ public sealed class GitHistoryAnalyzer : IAnalyzer
         return $"{Path.GetFullPath(repoRoot)}|{sha}|{options.SinceDays}|{options.IncludeDiffStats}";
     }
 
-    private static PatchEntryChanges? FindPatchEntry(Patch patch, IReadOnlyList<string> candidatePaths)
+    private static bool TryResolveTrackedAccumulator(
+        IReadOnlyDictionary<string, FileAccumulator> accumulators,
+        string? path,
+        string? oldPath,
+        out FileAccumulator accumulator)
     {
-        foreach (var candidate in candidatePaths)
-        {
-            var match = patch.FirstOrDefault(entry =>
-                string.Equals(NormalizePath(entry.Path), candidate, StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(NormalizePath(entry.OldPath), candidate, StringComparison.OrdinalIgnoreCase));
+        accumulator = null!;
 
-            if (match is not null)
-            {
-                return match;
-            }
+        if (!string.IsNullOrWhiteSpace(path) &&
+            accumulators.TryGetValue(NormalizePath(path), out var matchedByPath))
+        {
+            accumulator = matchedByPath;
+            return true;
         }
 
-        return null;
-    }
-
-    private static IEnumerable<string> EnumerateCandidatePaths(TreeEntryChanges change)
-    {
-        if (!string.IsNullOrWhiteSpace(change.Path))
+        if (!string.IsNullOrWhiteSpace(oldPath) &&
+            accumulators.TryGetValue(NormalizePath(oldPath), out var matchedByOldPath))
         {
-            yield return NormalizePath(change.Path);
+            accumulator = matchedByOldPath;
+            return true;
         }
 
-        if (!string.IsNullOrWhiteSpace(change.OldPath))
-        {
-            yield return NormalizePath(change.OldPath);
-        }
+        return false;
     }
 
     private static string NormalizePath(string path)

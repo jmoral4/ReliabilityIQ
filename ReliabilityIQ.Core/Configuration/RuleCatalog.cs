@@ -1,4 +1,6 @@
 using ReliabilityIQ.Core.Artifacts;
+using ReliabilityIQ.Core.ConfigDrift;
+using ReliabilityIQ.Core.Dependencies;
 using ReliabilityIQ.Core.GitHistory;
 using ReliabilityIQ.Core.MagicStrings;
 using ReliabilityIQ.Core.Persistence;
@@ -16,6 +18,8 @@ public static class RuleCatalog
         Add(byId, MagicStringRuleDefinitions.Rules);
         Add(byId, GitHistoryRuleDefinitions.Rules);
         Add(byId, ArtifactRuleDefinitions.Rules);
+        Add(byId, ConfigDriftRuleDefinitions.Rules);
+        Add(byId, DependencyRuleDefinitions.Rules);
 
         return byId.Values
             .OrderBy(r => r.RuleId, StringComparer.OrdinalIgnoreCase)
@@ -53,6 +57,16 @@ public static class RuleCatalog
         if (ruleId.StartsWith("incident.", StringComparison.OrdinalIgnoreCase))
         {
             return "incidents";
+        }
+
+        if (ruleId.StartsWith("config.drift.", StringComparison.OrdinalIgnoreCase))
+        {
+            return "config-drift";
+        }
+
+        if (ruleId.StartsWith("deps.", StringComparison.OrdinalIgnoreCase))
+        {
+            return "dependencies";
         }
 
         if (ruleId.StartsWith("custom.", StringComparison.OrdinalIgnoreCase))

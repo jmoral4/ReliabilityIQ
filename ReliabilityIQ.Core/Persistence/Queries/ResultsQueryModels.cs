@@ -382,3 +382,94 @@ public sealed record DirectoryDrilldown(
     double MetricValue,
     IReadOnlyList<FileSummaryItem> TopFiles,
     IReadOnlyList<RuleSummaryItem> TopRules);
+
+public sealed record RuleCatalogItem(
+    string RuleId,
+    string Title,
+    string DefaultSeverity,
+    string Description,
+    string Category,
+    string EffectiveState,
+    long TotalFindings);
+
+public sealed record RuleFindingAcrossRunsItem(
+    string RunId,
+    string RepoRoot,
+    DateTimeOffset StartedAt,
+    string FilePath,
+    long Line,
+    long Column,
+    string Severity,
+    string Message,
+    string Confidence,
+    string? Fingerprint);
+
+public sealed record SuppressedFindingItem(
+    long FindingId,
+    long FileId,
+    string FilePath,
+    string RuleId,
+    string RuleTitle,
+    string Severity,
+    string Confidence,
+    string Message,
+    string? SuppressionReason,
+    string SuppressionSource,
+    string? Metadata);
+
+public sealed record SuppressionSummary(
+    string RuleId,
+    string Title,
+    long SuppressedCount);
+
+public sealed record SuppressionOverview(
+    long ActiveFindingCount,
+    long SuppressedFindingCount,
+    long WhatIfTotalFindingCount,
+    IReadOnlyList<SuppressionSummary> CountsByRule,
+    IReadOnlyList<SuppressedFindingItem> SuppressedFindings);
+
+public sealed record RunComparisonRequest(
+    string BaselineRunId,
+    string TargetRunId);
+
+public sealed record RunComparisonFinding(
+    string Fingerprint,
+    string RuleId,
+    string FilePath,
+    long Line,
+    string Severity,
+    string Message,
+    string Confidence);
+
+public sealed record RunComparisonResult(
+    string BaselineRunId,
+    string TargetRunId,
+    long NewCount,
+    long FixedCount,
+    long UnchangedCount,
+    IReadOnlyList<RunComparisonFinding> NewFindings,
+    IReadOnlyList<RunComparisonFinding> FixedFindings);
+
+public sealed record ExportFindingItem(
+    long FindingId,
+    string RunId,
+    long FileId,
+    string RuleId,
+    string RuleTitle,
+    string RuleDescription,
+    string FilePath,
+    long Line,
+    long Column,
+    string Message,
+    string? Snippet,
+    string Severity,
+    string Confidence,
+    string? FileCategory,
+    string? Language,
+    string? Fingerprint,
+    string? Metadata,
+    bool AstConfirmed,
+    bool IsSuppressed,
+    string? SuppressionReason,
+    string? SuppressionSource);

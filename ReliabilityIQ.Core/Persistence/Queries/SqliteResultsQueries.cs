@@ -563,6 +563,505 @@ public sealed class SqliteResultsQueries
         return rows.Select(MapRuleSummaryItem).ToList();
     }
 
+    public async Task<IReadOnlyList<RuleCatalogItem>> GetRuleCatalog(
+        string? category = null,
+        CancellationToken cancellationToken = default)
+    {
+        var whereClause = string.Empty;
+        var parameters = new DynamicParameters();
+        if (!string.IsNullOrWhiteSpace(category))
+        {
+            whereClause = "WHERE category = @Category";
+            parameters.Add("Category", category.Trim().ToLowerInvariant());
+        }
+
+        var sql = $"""
+                   SELECT
+                       rule_id AS RuleId,
+                       title AS Title,
+                       default_severity AS DefaultSeverity,
+                       description AS Description,
+                       category AS Category,
+                       CASE
+                           WHEN total_findings = 0 THEN 'Disabled'
+                           WHEN override_hits > 0 THEN 'Overridden'
+                           ELSE 'Enabled'
+                       END AS EffectiveState,
+                       total_findings AS TotalFindings
+                   FROM (
+                       SELECT
+                           r.rule_id,
+                           r.title,
+                           r.default_severity,
+                           r.description,
+                           CASE
+                               WHEN r.rule_id LIKE 'portability.%' THEN 'portability'
+                               WHEN r.rule_id LIKE 'magic-string.%' THEN 'magic-strings'
+                               WHEN r.rule_id LIKE 'churn.%' OR r.rule_id LIKE 'git-history.%' THEN 'churn'
+                               WHEN r.rule_id LIKE 'deploy.%' THEN 'deploy'
+                               ELSE 'custom'
+                           END AS category,
+                           COALESCE(s.total_findings, 0) AS total_findings,
+                           COALESCE(s.override_hits, 0) AS override_hits
+                       FROM rules r
+                       LEFT JOIN (
+                           SELECT
+                               f.rule_id,
+                               COUNT(*) AS total_findings,
+                               SUM(CASE WHEN f.severity <> COALESCE(rr.default_severity, f.severity) THEN 1 ELSE 0 END) AS override_hits
+                           FROM findings f
+                           LEFT JOIN rules rr ON rr.rule_id = f.rule_id
+                           GROUP BY f.rule_id
+                       ) s ON s.rule_id = r.rule_id
+                   ) rc
+                   {whereClause}
+                   ORDER BY category ASC, rule_id ASC;
+                   """;
+
+        await using var connection = _connectionFactory();
+        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        var rows = await connection.QueryAsync<RuleCatalogRow>(
+            new CommandDefinition(sql, parameters, cancellationToken: cancellationToken)).ConfigureAwait(false);
+
+        return rows.Select(row => new RuleCatalogItem(
+            ToText(row.RuleId),
+            ToText(row.Title, ToText(row.RuleId)),
+            ToText(row.DefaultSeverity, "Info"),
+            ToText(row.Description),
+            ToText(row.Category, "custom"),
+            ToText(row.EffectiveState, "Disabled"),
+            ToLong(row.TotalFindings))).ToList();
+    }
+
+    public async Task<IReadOnlyList<RuleFindingAcrossRunsItem>> GetFindingsForRuleAcrossRuns(
+        string ruleId,
+        int limit = 500,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(ruleId);
+        var safeLimit = Math.Clamp(limit, 1, 2000);
+
+        const string sql = """
+                           SELECT
+                               sr.run_id AS RunId,
+                               sr.repo_root AS RepoRoot,
+                               sr.started_at AS StartedAt,
+                               f.file_path AS FilePath,
+                               f.line AS Line,
+                               f."column" AS "Column",
+                               f.severity AS Severity,
+                               f.message AS Message,
+                               f.confidence AS Confidence,
+                               f.fingerprint AS Fingerprint
+                           FROM findings f
+                           INNER JOIN scan_runs sr ON sr.run_id = f.run_id
+                           WHERE f.rule_id = @RuleId
+                           ORDER BY sr.started_at DESC, f.finding_id DESC
+                           LIMIT @Limit;
+                           """;
+
+        await using var connection = _connectionFactory();
+        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        var rows = await connection.QueryAsync<RuleFindingAcrossRunsRow>(
+            new CommandDefinition(sql, new { RuleId = ruleId, Limit = safeLimit }, cancellationToken: cancellationToken)).ConfigureAwait(false);
+
+        return rows.Select(row => new RuleFindingAcrossRunsItem(
+            row.RunId,
+            row.RepoRoot,
+            ParseDate(row.StartedAt),
+            row.FilePath,
+            row.Line,
+            row.Column,
+            row.Severity,
+            row.Message,
+            row.Confidence,
+            row.Fingerprint)).ToList();
+    }
+
+    public async Task<SuppressionOverview> GetSuppressionOverview(string runId, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(runId);
+        const string suppressedPredicate = "(COALESCE(f.metadata, '') LIKE '%\"suppressed\":true%' OR COALESCE(f.metadata, '') LIKE '%\"isSuppressed\":true%')";
+
+        var activeSql = $"""
+                         SELECT COUNT(*)
+                         FROM findings f
+                         WHERE f.run_id = @RunId
+                           AND NOT {suppressedPredicate};
+                         """;
+
+        var suppressedSql = $"""
+                             SELECT COUNT(*)
+                             FROM findings f
+                             WHERE f.run_id = @RunId
+                               AND {suppressedPredicate};
+                             """;
+
+        var countsByRuleSql = $"""
+                               SELECT
+                                   f.rule_id AS RuleId,
+                                   COALESCE(r.title, f.rule_id) AS Title,
+                                   COUNT(*) AS SuppressedCount
+                               FROM findings f
+                               LEFT JOIN rules r ON r.rule_id = f.rule_id
+                               WHERE f.run_id = @RunId
+                                 AND {suppressedPredicate}
+                               GROUP BY f.rule_id, r.title
+                               ORDER BY SuppressedCount DESC, f.rule_id ASC;
+                               """;
+
+        var itemsSql = $"""
+                        SELECT
+                            f.finding_id AS FindingId,
+                            f.file_id AS FileId,
+                            f.file_path AS FilePath,
+                            f.rule_id AS RuleId,
+                            COALESCE(r.title, f.rule_id) AS RuleTitle,
+                            f.severity AS Severity,
+                            f.confidence AS Confidence,
+                            f.message AS Message,
+                            CASE
+                                WHEN COALESCE(f.metadata, '') LIKE '%\"suppressionReason\":\"%' THEN
+                                    substr(
+                                        f.metadata,
+                                        instr(f.metadata, '\"suppressionReason\":\"') + length('\"suppressionReason\":\"'),
+                                        instr(substr(f.metadata, instr(f.metadata, '\"suppressionReason\":\"') + length('\"suppressionReason\":\"')), '\"') - 1)
+                                WHEN COALESCE(f.metadata, '') LIKE '%\"reason\":\"%' THEN
+                                    substr(
+                                        f.metadata,
+                                        instr(f.metadata, '\"reason\":\"') + length('\"reason\":\"'),
+                                        instr(substr(f.metadata, instr(f.metadata, '\"reason\":\"') + length('\"reason\":\"')), '\"') - 1)
+                                ELSE NULL
+                            END AS SuppressionReason,
+                            CASE
+                                WHEN COALESCE(f.metadata, '') LIKE '%\"suppressionSource\":\"%' THEN
+                                    lower(
+                                        substr(
+                                            f.metadata,
+                                            instr(f.metadata, '\"suppressionSource\":\"') + length('\"suppressionSource\":\"'),
+                                            instr(substr(f.metadata, instr(f.metadata, '\"suppressionSource\":\"') + length('\"suppressionSource\":\"')), '\"') - 1))
+                                WHEN lower(COALESCE(f.metadata, '')) LIKE '%allowlist%' THEN 'allowlist'
+                                WHEN lower(COALESCE(f.metadata, '')) LIKE '%inline%' THEN 'inline'
+                                ELSE 'config'
+                            END AS SuppressionSource,
+                            f.metadata AS Metadata
+                        FROM findings f
+                        LEFT JOIN rules r ON r.rule_id = f.rule_id
+                        WHERE f.run_id = @RunId
+                          AND {suppressedPredicate}
+                        ORDER BY f.rule_id ASC, f.file_path ASC, f.line ASC, f.finding_id ASC;
+                        """;
+
+        await using var connection = _connectionFactory();
+        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+
+        var activeCount = await connection.ExecuteScalarAsync<long>(
+            new CommandDefinition(activeSql, new { RunId = runId }, cancellationToken: cancellationToken)).ConfigureAwait(false);
+        var suppressedCount = await connection.ExecuteScalarAsync<long>(
+            new CommandDefinition(suppressedSql, new { RunId = runId }, cancellationToken: cancellationToken)).ConfigureAwait(false);
+        var byRule = await connection.QueryAsync<SuppressionSummary>(
+            new CommandDefinition(countsByRuleSql, new { RunId = runId }, cancellationToken: cancellationToken)).ConfigureAwait(false);
+        var rows = await connection.QueryAsync<SuppressedFindingRow>(
+            new CommandDefinition(itemsSql, new { RunId = runId }, cancellationToken: cancellationToken)).ConfigureAwait(false);
+
+        return new SuppressionOverview(
+            ActiveFindingCount: activeCount,
+            SuppressedFindingCount: suppressedCount,
+            WhatIfTotalFindingCount: activeCount + suppressedCount,
+            CountsByRule: byRule.ToList(),
+            SuppressedFindings: rows.Select(row => new SuppressedFindingItem(
+                row.FindingId,
+                row.FileId,
+                row.FilePath,
+                row.RuleId,
+                row.RuleTitle,
+                row.Severity,
+                row.Confidence,
+                row.Message,
+                row.SuppressionReason,
+                NormalizeSuppressionSource(row.SuppressionSource),
+                row.Metadata)).ToList());
+    }
+
+    public async Task<RunComparisonResult> GetRunComparison(
+        RunComparisonRequest request,
+        int detailLimit = 200,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentException.ThrowIfNullOrWhiteSpace(request.BaselineRunId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(request.TargetRunId);
+        var safeLimit = Math.Clamp(detailLimit, 1, 2000);
+
+        const string newCountSql = """
+                                   SELECT COUNT(*)
+                                   FROM (
+                                       SELECT DISTINCT f.fingerprint
+                                       FROM findings f
+                                       WHERE f.run_id = @TargetRunId
+                                         AND COALESCE(f.fingerprint, '') <> ''
+                                         AND NOT EXISTS (
+                                             SELECT 1
+                                             FROM findings b
+                                             WHERE b.run_id = @BaselineRunId
+                                               AND b.fingerprint = f.fingerprint)
+                                   ) x;
+                                   """;
+
+        const string fixedCountSql = """
+                                     SELECT COUNT(*)
+                                     FROM (
+                                         SELECT DISTINCT f.fingerprint
+                                         FROM findings f
+                                         WHERE f.run_id = @BaselineRunId
+                                           AND COALESCE(f.fingerprint, '') <> ''
+                                           AND NOT EXISTS (
+                                               SELECT 1
+                                               FROM findings t
+                                               WHERE t.run_id = @TargetRunId
+                                                 AND t.fingerprint = f.fingerprint)
+                                     ) x;
+                                     """;
+
+        const string unchangedCountSql = """
+                                         SELECT COUNT(*)
+                                         FROM (
+                                             SELECT DISTINCT t.fingerprint
+                                             FROM findings t
+                                             INNER JOIN findings b
+                                                 ON b.fingerprint = t.fingerprint
+                                             WHERE t.run_id = @TargetRunId
+                                               AND b.run_id = @BaselineRunId
+                                               AND COALESCE(t.fingerprint, '') <> ''
+                                         ) x;
+                                         """;
+
+        const string newDetailsSql = """
+                                     WITH ranked AS (
+                                         SELECT
+                                             f.fingerprint AS Fingerprint,
+                                             f.rule_id AS RuleId,
+                                             f.file_path AS FilePath,
+                                             f.line AS Line,
+                                             f.severity AS Severity,
+                                             f.message AS Message,
+                                             f.confidence AS Confidence,
+                                             ROW_NUMBER() OVER (PARTITION BY f.fingerprint ORDER BY f.finding_id ASC) AS rn
+                                         FROM findings f
+                                         WHERE f.run_id = @TargetRunId
+                                           AND COALESCE(f.fingerprint, '') <> ''
+                                           AND NOT EXISTS (
+                                               SELECT 1
+                                               FROM findings b
+                                               WHERE b.run_id = @BaselineRunId
+                                                 AND b.fingerprint = f.fingerprint)
+                                     )
+                                     SELECT Fingerprint, RuleId, FilePath, Line, Severity, Message, Confidence
+                                     FROM ranked
+                                     WHERE rn = 1
+                                     ORDER BY RuleId ASC, FilePath ASC, Line ASC
+                                     LIMIT @Limit;
+                                     """;
+
+        const string fixedDetailsSql = """
+                                       WITH ranked AS (
+                                           SELECT
+                                               f.fingerprint AS Fingerprint,
+                                               f.rule_id AS RuleId,
+                                               f.file_path AS FilePath,
+                                               f.line AS Line,
+                                               f.severity AS Severity,
+                                               f.message AS Message,
+                                               f.confidence AS Confidence,
+                                               ROW_NUMBER() OVER (PARTITION BY f.fingerprint ORDER BY f.finding_id ASC) AS rn
+                                           FROM findings f
+                                           WHERE f.run_id = @BaselineRunId
+                                             AND COALESCE(f.fingerprint, '') <> ''
+                                             AND NOT EXISTS (
+                                                 SELECT 1
+                                                 FROM findings t
+                                                 WHERE t.run_id = @TargetRunId
+                                                   AND t.fingerprint = f.fingerprint)
+                                       )
+                                       SELECT Fingerprint, RuleId, FilePath, Line, Severity, Message, Confidence
+                                       FROM ranked
+                                       WHERE rn = 1
+                                       ORDER BY RuleId ASC, FilePath ASC, Line ASC
+                                       LIMIT @Limit;
+                                       """;
+
+        await using var connection = _connectionFactory();
+        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        var parameters = new { request.BaselineRunId, request.TargetRunId, Limit = safeLimit };
+
+        var newCount = await connection.ExecuteScalarAsync<long>(
+            new CommandDefinition(newCountSql, parameters, cancellationToken: cancellationToken)).ConfigureAwait(false);
+        var fixedCount = await connection.ExecuteScalarAsync<long>(
+            new CommandDefinition(fixedCountSql, parameters, cancellationToken: cancellationToken)).ConfigureAwait(false);
+        var unchangedCount = await connection.ExecuteScalarAsync<long>(
+            new CommandDefinition(unchangedCountSql, parameters, cancellationToken: cancellationToken)).ConfigureAwait(false);
+
+        var newRows = await connection.QueryAsync<RunComparisonFinding>(
+            new CommandDefinition(newDetailsSql, parameters, cancellationToken: cancellationToken)).ConfigureAwait(false);
+        var fixedRows = await connection.QueryAsync<RunComparisonFinding>(
+            new CommandDefinition(fixedDetailsSql, parameters, cancellationToken: cancellationToken)).ConfigureAwait(false);
+
+        return new RunComparisonResult(
+            request.BaselineRunId,
+            request.TargetRunId,
+            newCount,
+            fixedCount,
+            unchangedCount,
+            newRows.ToList(),
+            fixedRows.ToList());
+    }
+
+    public async Task<IReadOnlyList<ExportFindingItem>> GetFindingsForExport(
+        string runId,
+        FindingsQueryFilters? filters = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(runId);
+
+        var effectiveFilters = filters ?? new FindingsQueryFilters();
+        var whereClause = "f.run_id = @RunId";
+        var parameters = new DynamicParameters();
+        parameters.Add("RunId", runId);
+
+        if (!string.IsNullOrWhiteSpace(effectiveFilters.Severity))
+        {
+            whereClause += " AND f.severity = @Severity";
+            parameters.Add("Severity", effectiveFilters.Severity);
+        }
+
+        if (!string.IsNullOrWhiteSpace(effectiveFilters.RuleId))
+        {
+            whereClause += " AND f.rule_id = @RuleId";
+            parameters.Add("RuleId", effectiveFilters.RuleId);
+        }
+
+        if (!string.IsNullOrWhiteSpace(effectiveFilters.RulePrefix))
+        {
+            whereClause += " AND f.rule_id LIKE @RulePrefix";
+            parameters.Add("RulePrefix", $"{effectiveFilters.RulePrefix.Trim()}%");
+        }
+
+        if (!string.IsNullOrWhiteSpace(effectiveFilters.Confidence))
+        {
+            whereClause += " AND f.confidence = @Confidence";
+            parameters.Add("Confidence", effectiveFilters.Confidence);
+        }
+
+        if (!string.IsNullOrWhiteSpace(effectiveFilters.FileCategory))
+        {
+            whereClause += " AND fl.category = @FileCategory";
+            parameters.Add("FileCategory", effectiveFilters.FileCategory);
+        }
+
+        if (!string.IsNullOrWhiteSpace(effectiveFilters.Language))
+        {
+            whereClause += " AND fl.language = @Language";
+            parameters.Add("Language", effectiveFilters.Language);
+        }
+
+        if (!string.IsNullOrWhiteSpace(effectiveFilters.PathPrefix))
+        {
+            whereClause += " AND f.file_path LIKE @PathPrefix";
+            parameters.Add("PathPrefix", $"{effectiveFilters.PathPrefix.Trim()}%");
+        }
+
+        if (!effectiveFilters.IncludeSuppressed)
+        {
+            whereClause += " AND NOT (COALESCE(f.metadata, '') LIKE '%\"suppressed\":true%' OR COALESCE(f.metadata, '') LIKE '%\"isSuppressed\":true%')";
+        }
+
+        var sql = $"""
+                   SELECT
+                       f.finding_id AS FindingId,
+                       f.run_id AS RunId,
+                       f.file_id AS FileId,
+                       f.rule_id AS RuleId,
+                       COALESCE(r.title, f.rule_id) AS RuleTitle,
+                       COALESCE(r.description, '') AS RuleDescription,
+                       f.file_path AS FilePath,
+                       f.line AS Line,
+                       f."column" AS "Column",
+                       f.message AS Message,
+                       f.snippet AS Snippet,
+                       f.severity AS Severity,
+                       f.confidence AS Confidence,
+                       fl.category AS FileCategory,
+                       fl.language AS Language,
+                       f.fingerprint AS Fingerprint,
+                       f.metadata AS Metadata,
+                       CASE
+                           WHEN COALESCE(f.metadata, '') LIKE '%\"astConfirmed\":true%' THEN 1
+                           ELSE 0
+                       END AS AstConfirmed,
+                       CASE
+                           WHEN COALESCE(f.metadata, '') LIKE '%\"suppressed\":true%' OR COALESCE(f.metadata, '') LIKE '%\"isSuppressed\":true%' THEN 1
+                           ELSE 0
+                       END AS IsSuppressed,
+                       CASE
+                           WHEN COALESCE(f.metadata, '') LIKE '%\"suppressionReason\":\"%' THEN
+                               substr(
+                                   f.metadata,
+                                   instr(f.metadata, '\"suppressionReason\":\"') + length('\"suppressionReason\":\"'),
+                                   instr(substr(f.metadata, instr(f.metadata, '\"suppressionReason\":\"') + length('\"suppressionReason\":\"')), '\"') - 1)
+                           WHEN COALESCE(f.metadata, '') LIKE '%\"reason\":\"%' THEN
+                               substr(
+                                   f.metadata,
+                                   instr(f.metadata, '\"reason\":\"') + length('\"reason\":\"'),
+                                   instr(substr(f.metadata, instr(f.metadata, '\"reason\":\"') + length('\"reason\":\"')), '\"') - 1)
+                           ELSE NULL
+                       END AS SuppressionReason,
+                       CASE
+                           WHEN COALESCE(f.metadata, '') LIKE '%\"suppressionSource\":\"%' THEN
+                               lower(
+                                   substr(
+                                       f.metadata,
+                                       instr(f.metadata, '\"suppressionSource\":\"') + length('\"suppressionSource\":\"'),
+                                       instr(substr(f.metadata, instr(f.metadata, '\"suppressionSource\":\"') + length('\"suppressionSource\":\"')), '\"') - 1))
+                           WHEN lower(COALESCE(f.metadata, '')) LIKE '%allowlist%' THEN 'allowlist'
+                           WHEN lower(COALESCE(f.metadata, '')) LIKE '%inline%' THEN 'inline'
+                           ELSE NULL
+                       END AS SuppressionSource
+                   FROM findings f
+                   INNER JOIN files fl ON fl.file_id = f.file_id
+                   LEFT JOIN rules r ON r.rule_id = f.rule_id
+                   WHERE {whereClause}
+                   ORDER BY f.rule_id ASC, f.file_path ASC, f.line ASC, f.finding_id ASC;
+                   """;
+
+        await using var connection = _connectionFactory();
+        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        var rows = await connection.QueryAsync<ExportFindingRow>(
+            new CommandDefinition(sql, parameters, cancellationToken: cancellationToken)).ConfigureAwait(false);
+
+        return rows.Select(row => new ExportFindingItem(
+            row.FindingId,
+            row.RunId,
+            row.FileId,
+            row.RuleId,
+            row.RuleTitle,
+            row.RuleDescription,
+            row.FilePath,
+            row.Line,
+            row.Column,
+            row.Message,
+            row.Snippet,
+            row.Severity,
+            row.Confidence,
+            row.FileCategory,
+            row.Language,
+            row.Fingerprint,
+            row.Metadata,
+            row.AstConfirmed,
+            row.IsSuppressed,
+            row.SuppressionReason,
+            row.SuppressionSource)).ToList();
+    }
+
     public async Task<FileDetailItem?> GetFileById(string runId, long fileId, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(runId);
@@ -1283,6 +1782,17 @@ public sealed class SqliteResultsQueries
                """;
     }
 
+    private static string NormalizeSuppressionSource(string? source)
+    {
+        return source?.Trim().ToLowerInvariant() switch
+        {
+            "inline" => "inline",
+            "allowlist" => "allowlist",
+            "config" => "config",
+            _ => "config"
+        };
+    }
+
     private static RunListItem MapRunListItem(RunRow row) => new(
         row.RunId,
         row.RepoRoot,
@@ -1469,6 +1979,116 @@ public sealed class SqliteResultsQueries
         public object? WarningCount { get; set; }
 
         public object? InfoCount { get; set; }
+    }
+
+    private sealed class RuleCatalogRow
+    {
+        public object? RuleId { get; set; }
+
+        public object? Title { get; set; }
+
+        public object? DefaultSeverity { get; set; }
+
+        public object? Description { get; set; }
+
+        public object? Category { get; set; }
+
+        public object? EffectiveState { get; set; }
+
+        public object? TotalFindings { get; set; }
+    }
+
+    private sealed class RuleFindingAcrossRunsRow
+    {
+        public string RunId { get; set; } = string.Empty;
+
+        public string RepoRoot { get; set; } = string.Empty;
+
+        public string StartedAt { get; set; } = string.Empty;
+
+        public string FilePath { get; set; } = string.Empty;
+
+        public long Line { get; set; }
+
+        public long Column { get; set; }
+
+        public string Severity { get; set; } = string.Empty;
+
+        public string Message { get; set; } = string.Empty;
+
+        public string Confidence { get; set; } = string.Empty;
+
+        public string? Fingerprint { get; set; }
+    }
+
+    private sealed class SuppressedFindingRow
+    {
+        public long FindingId { get; set; }
+
+        public long FileId { get; set; }
+
+        public string FilePath { get; set; } = string.Empty;
+
+        public string RuleId { get; set; } = string.Empty;
+
+        public string RuleTitle { get; set; } = string.Empty;
+
+        public string Severity { get; set; } = string.Empty;
+
+        public string Confidence { get; set; } = string.Empty;
+
+        public string Message { get; set; } = string.Empty;
+
+        public string? SuppressionReason { get; set; }
+
+        public string? SuppressionSource { get; set; }
+
+        public string? Metadata { get; set; }
+    }
+
+    private sealed class ExportFindingRow
+    {
+        public long FindingId { get; set; }
+
+        public string RunId { get; set; } = string.Empty;
+
+        public long FileId { get; set; }
+
+        public string RuleId { get; set; } = string.Empty;
+
+        public string RuleTitle { get; set; } = string.Empty;
+
+        public string RuleDescription { get; set; } = string.Empty;
+
+        public string FilePath { get; set; } = string.Empty;
+
+        public long Line { get; set; }
+
+        public long Column { get; set; }
+
+        public string Message { get; set; } = string.Empty;
+
+        public string? Snippet { get; set; }
+
+        public string Severity { get; set; } = string.Empty;
+
+        public string Confidence { get; set; } = string.Empty;
+
+        public string? FileCategory { get; set; }
+
+        public string? Language { get; set; }
+
+        public string? Fingerprint { get; set; }
+
+        public string? Metadata { get; set; }
+
+        public bool AstConfirmed { get; set; }
+
+        public bool IsSuppressed { get; set; }
+
+        public string? SuppressionReason { get; set; }
+
+        public string? SuppressionSource { get; set; }
     }
 
     private sealed class DeploymentArtifactRiskRow

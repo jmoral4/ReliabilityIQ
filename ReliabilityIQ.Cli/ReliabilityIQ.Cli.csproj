@@ -13,6 +13,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\ReliabilityIQ.Analyzers.Artifacts\ReliabilityIQ.Analyzers.Artifacts.csproj" />
+    <ProjectReference Include="..\ReliabilityIQ.Analyzers.ConfigDrift\ReliabilityIQ.Analyzers.ConfigDrift.csproj" />
+    <ProjectReference Include="..\ReliabilityIQ.Analyzers.Dependencies\ReliabilityIQ.Analyzers.Dependencies.csproj" />
     <ProjectReference Include="..\ReliabilityIQ.Analyzers.GitHistory\ReliabilityIQ.Analyzers.GitHistory.csproj" />
     <ProjectReference Include="..\ReliabilityIQ.Analyzers.MagicStrings\ReliabilityIQ.Analyzers.MagicStrings.csproj" />
     <ProjectReference Include="..\ReliabilityIQ.Analyzers.CSharp\ReliabilityIQ.Analyzers.CSharp.csproj" />
