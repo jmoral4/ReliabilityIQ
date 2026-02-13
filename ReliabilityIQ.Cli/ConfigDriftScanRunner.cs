@@ -9,7 +9,9 @@ namespace ReliabilityIQ.Cli;
 
 public sealed record ConfigDriftScanOptions(
     string RepoPath,
-    string? DatabasePath);
+    string? DatabasePath,
+    string? RunId = null,
+    bool AppendToRun = false);
 
 public static class ConfigDriftScanRunner
 {
@@ -67,7 +69,9 @@ public static class ConfigDriftScanRunner
                 .Select(f => f with { RunId = string.Empty })
                 .ToList();
 
-            var runId = $"run-{DateTimeOffset.UtcNow:yyyyMMddHHmmss}-{Guid.NewGuid():N}";
+            var runId = string.IsNullOrWhiteSpace(options.RunId)
+                ? $"run-{DateTimeOffset.UtcNow:yyyyMMddHHmmss}-{Guid.NewGuid():N}"
+                : options.RunId;
             findings = FindingPolicyEngine.Apply(findings, config)
                 .Select(f => f with { RunId = runId })
                 .OrderBy(f => f.FilePath, StringComparer.OrdinalIgnoreCase)
@@ -99,7 +103,14 @@ public static class ConfigDriftScanRunner
                 .Select(g => g.First())
                 .ToList();
 
-            await writer.WriteAsync(run, persistedFiles, findings, ruleDefinitions, cancellationToken: cancellationToken).ConfigureAwait(false);
+            await writer.WriteAsync(
+                    run,
+                    persistedFiles,
+                    findings,
+                    ruleDefinitions,
+                    clearRunData: !options.AppendToRun,
+                    cancellationToken: cancellationToken)
+                .ConfigureAwait(false);
 
             await output.WriteLineAsync($"Run ID: {runId}").ConfigureAwait(false);
             await output.WriteLineAsync($"Repo: {repoRoot}").ConfigureAwait(false);

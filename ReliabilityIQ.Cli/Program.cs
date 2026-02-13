@@ -143,7 +143,7 @@ public static class Program
 
     private static Command CreateAllScansCommand()
     {
-        var command = new Command("all", "Run portability, magic strings, churn, and deploy scans");
+        var command = new Command("all", "Run all available scanners and persist into a single run");
 
         var repoOption = new Option<DirectoryInfo>("--repo", "Repository path to scan")
         {
@@ -264,7 +264,52 @@ public static class Program
                 Console.Out,
                 CancellationToken.None).ConfigureAwait(false);
 
-            Environment.ExitCode = deployExitCode == 2 ? 2 : portabilityExitCode;
+            if (deployExitCode == 2)
+            {
+                Environment.ExitCode = 2;
+                return;
+            }
+
+            var configDriftExitCode = await ConfigDriftScanRunner.ExecuteAsync(
+                new ConfigDriftScanOptions(
+                    RepoPath: repo.FullName,
+                    DatabasePath: db?.FullName,
+                    RunId: sharedRunId,
+                    AppendToRun: true),
+                Console.Out,
+                CancellationToken.None).ConfigureAwait(false);
+
+            if (configDriftExitCode == 2)
+            {
+                Environment.ExitCode = 2;
+                return;
+            }
+
+            var dependenciesExitCode = await DependenciesScanRunner.ExecuteAsync(
+                new DependenciesScanOptions(
+                    RepoPath: repo.FullName,
+                    DatabasePath: db?.FullName,
+                    RunId: sharedRunId,
+                    AppendToRun: true),
+                Console.Out,
+                cancellationToken: CancellationToken.None).ConfigureAwait(false);
+
+            if (dependenciesExitCode == 2)
+            {
+                Environment.ExitCode = 2;
+                return;
+            }
+
+            var hygieneExitCode = await HygieneScanRunner.ExecuteAsync(
+                new HygieneScanOptions(
+                    RepoPath: repo.FullName,
+                    DatabasePath: db?.FullName,
+                    RunId: sharedRunId,
+                    AppendToRun: true),
+                Console.Out,
+                cancellationToken: CancellationToken.None).ConfigureAwait(false);
+
+            Environment.ExitCode = hygieneExitCode == 2 ? 2 : portabilityExitCode;
         });
 
         return command;

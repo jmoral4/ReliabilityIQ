@@ -587,7 +587,7 @@ public sealed class SqliteResultsQueries
                        description AS Description,
                        category AS Category,
                        CASE
-                           WHEN total_findings = 0 THEN 'Disabled'
+                           WHEN total_findings = 0 THEN 'No Findings'
                            WHEN override_hits > 0 THEN 'Overridden'
                            ELSE 'Enabled'
                        END AS EffectiveState,
@@ -633,7 +633,7 @@ public sealed class SqliteResultsQueries
             ToText(row.DefaultSeverity, "Info"),
             ToText(row.Description),
             ToText(row.Category, "custom"),
-            ToText(row.EffectiveState, "Disabled"),
+            ToText(row.EffectiveState, "No Findings"),
             ToLong(row.TotalFindings))).ToList();
     }
 
