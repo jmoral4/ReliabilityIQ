@@ -48,6 +48,10 @@ public static class PortabilityPatternMatcher
         @"\b(?:server|data source|accountkey)\s*=",
         RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
 
+    private static readonly Regex RegistryKeyRegex = new(
+        @"\bHKEY_(?:LOCAL_MACHINE|CURRENT_USER|CLASSES_ROOT|USERS|CURRENT_CONFIG)\\[^\r\n""']+",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant | RegexOptions.IgnoreCase);
+
     public static IReadOnlyList<string> MatchRuleIds(string literalValue)
     {
         if (string.IsNullOrWhiteSpace(literalValue))
@@ -107,7 +111,22 @@ public static class PortabilityPatternMatcher
             matched.Add("portability.hardcoded.localhost");
         }
 
+        if (RegistryKeyRegex.IsMatch(literalValue))
+        {
+            matched.Add("portability.hardcoded.registrykey");
+        }
+
         return matched;
+    }
+
+    public static bool IsNonStandardPort(int port)
+    {
+        if (port <= 0 || port > 65535)
+        {
+            return false;
+        }
+
+        return port is not (22 or 80 or 443);
     }
 
     public static string CreateFingerprint(string ruleId, string filePath, int line, int column, string rawValue)

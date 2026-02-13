@@ -10,6 +10,7 @@
   <ItemGroup>
     <PackageReference Include="Dapper" Version="2.1.66" />
     <PackageReference Include="coverlet.collector" Version="6.0.4" />
+    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.0" />
     <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.0" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
     <PackageReference Include="xunit" Version="2.9.3" />
@@ -21,9 +22,13 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\ReliabilityIQ.Analyzers.CSharp\ReliabilityIQ.Analyzers.CSharp.csproj" />
+    <ProjectReference Include="..\ReliabilityIQ.Analyzers.PowerShell\ReliabilityIQ.Analyzers.PowerShell.csproj" />
     <ProjectReference Include="..\ReliabilityIQ.Analyzers.Regex\ReliabilityIQ.Analyzers.Regex.csproj" />
+    <ProjectReference Include="..\ReliabilityIQ.Analyzers.TreeSitter\ReliabilityIQ.Analyzers.TreeSitter.csproj" />
     <ProjectReference Include="..\ReliabilityIQ.Cli\ReliabilityIQ.Cli.csproj" />
     <ProjectReference Include="..\ReliabilityIQ.Core\ReliabilityIQ.Core.csproj" />
+    <ProjectReference Include="..\ReliabilityIQ.Web\ReliabilityIQ.Web.csproj" />
   </ItemGroup>
 
   <ItemGroup>

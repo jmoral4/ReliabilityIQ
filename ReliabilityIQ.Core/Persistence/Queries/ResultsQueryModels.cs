@@ -63,8 +63,8 @@ public sealed record FindingListItem(
     long FindingId,
     string RuleId,
     string FilePath,
-    int Line,
-    int Column,
+    long Line,
+    long Column,
     string Message,
     string? Snippet,
     string Severity,
@@ -81,15 +81,15 @@ public sealed record FileSummaryItem(
     string FilePath,
     string? Category,
     string? Language,
-    int FindingCount,
-    int ErrorCount,
-    int WarningCount,
-    int InfoCount);
+    long FindingCount,
+    long ErrorCount,
+    long WarningCount,
+    long InfoCount);
 
 public sealed record RuleSummaryItem(
     string RuleId,
     string Title,
-    int FindingCount,
-    int ErrorCount,
-    int WarningCount,
-    int InfoCount);
+    long FindingCount,
+    long ErrorCount,
+    long WarningCount,
+    long InfoCount);

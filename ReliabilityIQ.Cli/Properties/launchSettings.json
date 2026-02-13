@@ -3,6 +3,14 @@
     "ReliabilityIQ.Cli": {
       "commandName": "Project",
       "commandLineArgs": "scan portability --repo ./test-fixture"
+    },
+    "Server Start": {
+      "commandName": "Project",
+      "commandLineArgs": "server start --db ../reliabilityiq-results.db"
+    },
+    "Server Start (No Browser)": {
+      "commandName": "Project",
+      "commandLineArgs": "server start --db ../reliabilityiq-results.db --port 5100 --no-browser"
     }
   }
 }

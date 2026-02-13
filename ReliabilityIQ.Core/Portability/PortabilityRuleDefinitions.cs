@@ -51,7 +51,22 @@ public static class PortabilityRuleDefinitions
             "portability.hardcoded.localhost",
             "Hardcoded Localhost Binding",
             FindingSeverity.Warning,
-            "Avoid localhost-only bindings for container/cloud workloads; prefer configuration and 0.0.0.0 where needed.")
+            "Avoid localhost-only bindings for container/cloud workloads; prefer configuration and 0.0.0.0 where needed."),
+        new(
+            "portability.hardcoded.registrykey",
+            "Hardcoded Windows Registry Key",
+            FindingSeverity.Warning,
+            "Avoid hardcoded registry keys and move machine-specific settings into environment-aware configuration."),
+        new(
+            "portability.cloud.sdk.no_abstraction",
+            "Direct Cloud SDK Usage Without Abstraction",
+            FindingSeverity.Warning,
+            "Prefer interface-based adapters around cloud SDK clients to reduce cloud lock-in and improve testability."),
+        new(
+            "portability.hardcoded.port",
+            "Hardcoded Non-Standard Port",
+            FindingSeverity.Warning,
+            "Move non-standard ports to configuration so deployment environments can override them safely.")
     ];
 
     public static FrozenDictionary<string, RuleDefinition> ById { get; } =

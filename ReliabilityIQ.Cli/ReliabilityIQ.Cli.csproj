@@ -12,7 +12,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\ReliabilityIQ.Analyzers.CSharp\ReliabilityIQ.Analyzers.CSharp.csproj" />
+    <ProjectReference Include="..\ReliabilityIQ.Analyzers.PowerShell\ReliabilityIQ.Analyzers.PowerShell.csproj" />
     <ProjectReference Include="..\ReliabilityIQ.Analyzers.Regex\ReliabilityIQ.Analyzers.Regex.csproj" />
+    <ProjectReference Include="..\ReliabilityIQ.Analyzers.TreeSitter\ReliabilityIQ.Analyzers.TreeSitter.csproj" />
     <ProjectReference Include="..\ReliabilityIQ.Core\ReliabilityIQ.Core.csproj" />
   </ItemGroup>
 

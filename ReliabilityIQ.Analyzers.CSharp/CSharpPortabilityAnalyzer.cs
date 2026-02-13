@@ -130,6 +130,9 @@ public sealed class CSharpPortabilityAnalyzer : IAnalyzer
             }
         }
 
+        AddCloudSdkWithoutAbstractionFindings(root, syntaxTree, context, fileSuppressions, isTestCode, findings);
+        AddHardcodedPortFindings(root, syntaxTree, context, fileSuppressions, isTestCode, findings);
+
         return findings;
     }
 
@@ -146,6 +149,172 @@ public sealed class CSharpPortabilityAnalyzer : IAnalyzer
     private static string CreateMetadata(UsageContext usage, string ruleId, FindingConfidence confidence, int line)
     {
         return $$"""{"engine":"roslyn","astConfirmed":{{(usage.IsInterestingCallsite || usage.IsAttributeArgument).ToString().ToLowerInvariant()}},"callsite":"{{Escape(usage.Symbol)}}","context":"{{Escape(usage.DisplayContext)}}","ruleId":"{{ruleId}}","confidence":"{{confidence}}","line":{{line}}}""";
+    }
+
+    private static void AddCloudSdkWithoutAbstractionFindings(
+        SyntaxNode root,
+        SyntaxTree syntaxTree,
+        AnalysisContext context,
+        FileSuppressionSet fileSuppressions,
+        bool isTestCode,
+        List<Finding> findings)
+    {
+        const string ruleId = "portability.cloud.sdk.no_abstraction";
+        if (!PortabilityRuleDefinitions.ById.TryGetValue(ruleId, out var rule))
+        {
+            return;
+        }
+
+        foreach (var objectCreation in root.DescendantNodes().OfType<ObjectCreationExpressionSyntax>())
+        {
+            var typeName = objectCreation.Type.ToString();
+            if (!IsCloudSdkType(typeName))
+            {
+                continue;
+            }
+
+            if (IsAssignedToInterfaceType(objectCreation))
+            {
+                continue;
+            }
+
+            var span = syntaxTree.GetLineSpan(objectCreation.Type.Span);
+            var line = span.StartLinePosition.Line + 1;
+            var column = span.StartLinePosition.Character + 1;
+            var fingerprint = PortabilityPatternMatcher.CreateFingerprint(ruleId, context.FilePath, line, column, typeName);
+
+            if (fileSuppressions.IsSuppressed(context.FilePath, ruleId, fingerprint))
+            {
+                continue;
+            }
+
+            findings.Add(new Finding
+            {
+                RuleId = ruleId,
+                FilePath = context.FilePath,
+                Line = line,
+                Column = column,
+                Message = $"Direct cloud SDK type '{typeName}' is instantiated without an abstraction boundary.",
+                Snippet = PortabilityPatternMatcher.GetSnippet(context.Content, line),
+                Severity = isTestCode ? FindingSeverity.Info : rule.DefaultSeverity,
+                Confidence = FindingConfidence.High,
+                Fingerprint = fingerprint,
+                Metadata = $$"""{"engine":"roslyn","astConfirmed":true,"callsite":"new {{Escape(typeName)}}","ruleId":"{{ruleId}}","confidence":"High"}"""
+            });
+        }
+    }
+
+    private static void AddHardcodedPortFindings(
+        SyntaxNode root,
+        SyntaxTree syntaxTree,
+        AnalysisContext context,
+        FileSuppressionSet fileSuppressions,
+        bool isTestCode,
+        List<Finding> findings)
+    {
+        const string ruleId = "portability.hardcoded.port";
+        if (!PortabilityRuleDefinitions.ById.TryGetValue(ruleId, out var rule))
+        {
+            return;
+        }
+
+        foreach (var numericLiteral in root.DescendantNodes().OfType<LiteralExpressionSyntax>())
+        {
+            if (!numericLiteral.IsKind(SyntaxKind.NumericLiteralExpression))
+            {
+                continue;
+            }
+
+            if (numericLiteral.Token.Value is not int intValue || !PortabilityPatternMatcher.IsNonStandardPort(intValue))
+            {
+                continue;
+            }
+
+            var symbol = FindPortCallsite(numericLiteral);
+            if (symbol is null)
+            {
+                continue;
+            }
+
+            var span = syntaxTree.GetLineSpan(numericLiteral.Span);
+            var line = span.StartLinePosition.Line + 1;
+            var column = span.StartLinePosition.Character + 1;
+            var fingerprint = PortabilityPatternMatcher.CreateFingerprint(ruleId, context.FilePath, line, column, numericLiteral.Token.ValueText);
+
+            if (fileSuppressions.IsSuppressed(context.FilePath, ruleId, fingerprint))
+            {
+                continue;
+            }
+
+            findings.Add(new Finding
+            {
+                RuleId = ruleId,
+                FilePath = context.FilePath,
+                Line = line,
+                Column = column,
+                Message = $"Hardcoded non-standard port '{intValue}' detected in '{symbol}'.",
+                Snippet = PortabilityPatternMatcher.GetSnippet(context.Content, line),
+                Severity = isTestCode ? FindingSeverity.Info : rule.DefaultSeverity,
+                Confidence = FindingConfidence.High,
+                Fingerprint = fingerprint,
+                Metadata = $$"""{"engine":"roslyn","astConfirmed":true,"callsite":"{{Escape(symbol)}}","ruleId":"{{ruleId}}","confidence":"High"}"""
+            });
+        }
+    }
+
+    private static bool IsCloudSdkType(string typeName)
+    {
+        return typeName.Contains("BlobServiceClient", StringComparison.Ordinal) ||
+               typeName.Contains("QueueServiceClient", StringComparison.Ordinal) ||
+               typeName.Contains("TableServiceClient", StringComparison.Ordinal) ||
+               typeName.Contains("SecretClient", StringComparison.Ordinal) ||
+               typeName.Contains("AmazonS3Client", StringComparison.Ordinal) ||
+               typeName.Contains("Google.Cloud", StringComparison.Ordinal);
+    }
+
+    private static bool IsAssignedToInterfaceType(ObjectCreationExpressionSyntax objectCreation)
+    {
+        if (objectCreation.Parent is EqualsValueClauseSyntax equals &&
+            equals.Parent is VariableDeclaratorSyntax declarator &&
+            declarator.Parent?.Parent is VariableDeclarationSyntax declaration &&
+            declaration.Type is IdentifierNameSyntax identifier)
+        {
+            return identifier.Identifier.Text.StartsWith('I');
+        }
+
+        return false;
+    }
+
+    private static string? FindPortCallsite(LiteralExpressionSyntax literal)
+    {
+        var current = literal.Parent;
+        while (current is not null)
+        {
+            if (current is InvocationExpressionSyntax invocation)
+            {
+                var symbol = invocation.Expression.ToString();
+                if (symbol.Contains("Connect", StringComparison.OrdinalIgnoreCase) ||
+                    symbol.Contains("Listen", StringComparison.OrdinalIgnoreCase) ||
+                    symbol.Contains("Bind", StringComparison.OrdinalIgnoreCase))
+                {
+                    return symbol;
+                }
+            }
+
+            if (current is ObjectCreationExpressionSyntax objectCreation)
+            {
+                var typeName = objectCreation.Type.ToString();
+                if (typeName.Contains("IPEndPoint", StringComparison.OrdinalIgnoreCase) ||
+                    typeName.Contains("Socket", StringComparison.OrdinalIgnoreCase))
+                {
+                    return typeName;
+                }
+            }
+
+            current = current.Parent;
+        }
+
+        return null;
     }
 
     private static Dictionary<int, List<string>> ParseInlineSuppressions(IReadOnlyList<string> lines)
@@ -214,7 +383,9 @@ public sealed class CSharpPortabilityAnalyzer : IAnalyzer
     private static bool IsTestCode(string filePath)
     {
         var normalized = filePath.Replace('\\', '/');
-        return normalized.Contains("/tests/", StringComparison.OrdinalIgnoreCase) ||
+        return normalized.StartsWith("tests/", StringComparison.OrdinalIgnoreCase) ||
+               normalized.Contains("/tests/", StringComparison.OrdinalIgnoreCase) ||
+               normalized.Contains("/test/", StringComparison.OrdinalIgnoreCase) ||
                normalized.Contains(".tests.", StringComparison.OrdinalIgnoreCase);
     }
 
@@ -290,143 +461,6 @@ public sealed class CSharpPortabilityAnalyzer : IAnalyzer
                    symbol.Contains("Path", StringComparison.Ordinal) ||
                    symbol.Contains("BlobServiceClient", StringComparison.Ordinal) ||
                    symbol.Contains("SqlConnection", StringComparison.Ordinal);
-        }
-    }
-
-    private sealed class FileSuppressionSet
-    {
-        private readonly List<Entry> _entries;
-
-        private FileSuppressionSet(List<Entry> entries)
-        {
-            _entries = entries;
-        }
-
-        public static FileSuppressionSet Load(AnalysisContext context)
-        {
-            var filePath = ResolveSuppressionPath(context.Configuration);
-            if (filePath is null || !File.Exists(filePath))
-            {
-                return new FileSuppressionSet([]);
-            }
-
-            var entries = new List<Entry>();
-            Entry? current = null;
-
-            foreach (var raw in File.ReadLines(filePath))
-            {
-                var line = raw.Trim();
-                if (line.Length == 0 || line.StartsWith('#'))
-                {
-                    continue;
-                }
-
-                if (line.StartsWith('-'))
-                {
-                    if (current is not null)
-                    {
-                        entries.Add(current);
-                    }
-
-                    current = new Entry();
-                    line = line.TrimStart('-').Trim();
-                }
-
-                if (current is null)
-                {
-                    continue;
-                }
-
-                var separator = line.IndexOf(':');
-                if (separator < 0)
-                {
-                    continue;
-                }
-
-                var key = line[..separator].Trim();
-                var value = line[(separator + 1)..].Trim().Trim('\'', '"');
-
-                if (key.Equals("path", StringComparison.OrdinalIgnoreCase))
-                {
-                    current.PathGlob = value;
-                }
-                else if (key.Equals("rule", StringComparison.OrdinalIgnoreCase) || key.Equals("rule_id", StringComparison.OrdinalIgnoreCase))
-                {
-                    current.RuleId = value;
-                }
-                else if (key.Equals("fingerprint", StringComparison.OrdinalIgnoreCase))
-                {
-                    current.Fingerprint = value;
-                }
-            }
-
-            if (current is not null)
-            {
-                entries.Add(current);
-            }
-
-            return new FileSuppressionSet(entries.Where(entry => !string.IsNullOrWhiteSpace(entry.PathGlob) && !string.IsNullOrWhiteSpace(entry.RuleId)).ToList());
-        }
-
-        public bool IsSuppressed(string filePath, string ruleId, string fingerprint)
-        {
-            foreach (var entry in _entries)
-            {
-                if (!GlobMatch(filePath, entry.PathGlob!))
-                {
-                    continue;
-                }
-
-                if (!string.Equals(ruleId, entry.RuleId, StringComparison.OrdinalIgnoreCase))
-                {
-                    continue;
-                }
-
-                if (string.IsNullOrWhiteSpace(entry.Fingerprint) ||
-                    string.Equals(fingerprint, entry.Fingerprint, StringComparison.OrdinalIgnoreCase))
-                {
-                    return true;
-                }
-            }
-
-            return false;
-        }
-
-        private static string? ResolveSuppressionPath(IReadOnlyDictionary<string, string?>? configuration)
-        {
-            if (configuration is null)
-            {
-                return null;
-            }
-
-            if (configuration.TryGetValue("suppressionsPath", out var explicitPath) && !string.IsNullOrWhiteSpace(explicitPath))
-            {
-                return Path.GetFullPath(explicitPath);
-            }
-
-            if (configuration.TryGetValue("repoRoot", out var repoRoot) && !string.IsNullOrWhiteSpace(repoRoot))
-            {
-                return Path.Combine(repoRoot, "reliabilityiq.suppressions.yaml");
-            }
-
-            return null;
-        }
-
-        private static bool GlobMatch(string value, string pattern)
-        {
-            var normalizedValue = value.Replace('\\', '/');
-            var normalizedPattern = pattern.Replace('\\', '/');
-            var regexPattern = "^" + Regex.Escape(normalizedPattern).Replace("\\*", ".*").Replace("\\?", ".") + "$";
-            return Regex.IsMatch(normalizedValue, regexPattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-        }
-
-        private sealed class Entry
-        {
-            public string? PathGlob { get; set; }
-
-            public string? RuleId { get; set; }
-
-            public string? Fingerprint { get; set; }
         }
     }
 }

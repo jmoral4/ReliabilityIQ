@@ -77,9 +77,9 @@ public sealed class SqliteResultsQueries
             ParseDate(row.StartedAt),
             ParseNullableDate(row.EndedAt),
             row.ToolVersion,
-            row.ErrorCount,
-            row.WarningCount,
-            row.InfoCount);
+            ToInt(row.ErrorCount),
+            ToInt(row.WarningCount),
+            ToInt(row.InfoCount));
     }
 
     public async Task<FindingsPage> GetFindings(string runId, FindingsQueryRequest? request = null, CancellationToken cancellationToken = default)
@@ -249,9 +249,19 @@ public sealed class SqliteResultsQueries
         ParseDate(row.StartedAt),
         ParseNullableDate(row.EndedAt),
         row.ToolVersion,
-        row.ErrorCount,
-        row.WarningCount,
-        row.InfoCount);
+        ToInt(row.ErrorCount),
+        ToInt(row.WarningCount),
+        ToInt(row.InfoCount));
+
+    private static int ToInt(long value)
+    {
+        return value switch
+        {
+            > int.MaxValue => int.MaxValue,
+            < int.MinValue => int.MinValue,
+            _ => (int)value
+        };
+    }
 
     private static DateTimeOffset ParseDate(string value)
     {
@@ -285,7 +295,7 @@ public sealed class SqliteResultsQueries
         string StartedAt,
         string? EndedAt,
         string ToolVersion,
-        int ErrorCount,
-        int WarningCount,
-        int InfoCount);
+        long ErrorCount,
+        long WarningCount,
+        long InfoCount);
 }
