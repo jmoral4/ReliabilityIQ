@@ -98,6 +98,20 @@ else
                     </div>
 
                     <button id="applyFilters" type="button" class="btn btn-sm btn-primary w-100">Apply Filters</button>
+
+                    <hr />
+                    <div class="d-grid gap-2">
+                        <a class="btn btn-sm btn-outline-secondary" asp-page="/Run/Suppressions" asp-route-runId="@Model.RunId">View Suppressions</a>
+                        <a class="btn btn-sm btn-outline-secondary" asp-page="/Run/Compare" asp-route-runId="@Model.RunId">Compare Runs</a>
+                    </div>
+
+                    <h3 class="h6 text-uppercase text-body-secondary mt-3">Export</h3>
+                    <div class="d-grid gap-2">
+                        <button type="button" class="btn btn-sm btn-outline-primary" onclick="downloadExport('csv')">CSV</button>
+                        <button type="button" class="btn btn-sm btn-outline-primary" onclick="downloadExport('json')">JSON</button>
+                        <button type="button" class="btn btn-sm btn-outline-primary" onclick="downloadExport('sarif')">SARIF</button>
+                        <button type="button" class="btn btn-sm btn-outline-primary" onclick="downloadExport('html')">HTML</button>
+                    </div>
                 </div>
             </div>
         </aside>
@@ -169,6 +183,30 @@ else
         }
 
         const runId = "@Model.RunId";
+
+        function downloadExport(format) {
+            const query = new URLSearchParams();
+            const severity = document.getElementById("severityFilter").value;
+            const rule = document.getElementById("ruleFilter").value;
+            const rulePrefix = document.getElementById("rulePrefixFilter").value;
+            const confidence = document.getElementById("confidenceFilter").value;
+            const fileCategory = document.getElementById("categoryFilter").value;
+            const language = document.getElementById("languageFilter").value;
+            const pathPrefix = document.getElementById("pathPrefixFilter").value;
+            const includeSuppressed = document.getElementById("showSuppressedToggle").checked;
+
+            if (severity) query.set("severity", severity);
+            if (rule) query.set("rule", rule);
+            if (rulePrefix) query.set("rulePrefix", rulePrefix);
+            if (confidence) query.set("confidence", confidence);
+            if (fileCategory) query.set("fileCategory", fileCategory);
+            if (language) query.set("language", language);
+            if (pathPrefix) query.set("pathPrefix", pathPrefix);
+            if (includeSuppressed) query.set("includeSuppressed", "true");
+
+            window.location.href = `/api/run/${encodeURIComponent(runId)}/export/${encodeURIComponent(format)}?${query.toString()}`;
+        }
+
         const table = new DataTable("#findingsTable", {
             serverSide: true,
             processing: true,

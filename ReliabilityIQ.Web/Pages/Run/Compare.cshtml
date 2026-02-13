@@ -1,0 +1,86 @@
+@page "/run/{runId}/compare"
+@model ReliabilityIQ.Web.Pages.Run.CompareModel
+@{
+    ViewData["Title"] = "Run Comparison";
+}
+
+<section class="mb-3">
+    <h1 class="h3 mb-1">Run Comparison</h1>
+    <div class="small text-body-secondary">Compare findings by fingerprint between two runs.</div>
+</section>
+
+<form method="get" class="row g-2 align-items-end mb-3">
+    <input type="hidden" name="runId" value="@Model.RunId" />
+    <div class="col-12 col-md-5">
+        <label for="baselineRunId" class="form-label">Baseline Run (A)</label>
+        <select id="baselineRunId" name="baselineRunId" class="form-select form-select-sm">
+            @foreach (var run in Model.Runs)
+            {
+                <option value="@run.RunId" selected="@(string.Equals(run.RunId, Model.BaselineRunId, StringComparison.OrdinalIgnoreCase))">@run.RunId (@run.StartedAt.UtcDateTime.ToString("yyyy-MM-dd HH:mm"))</option>
+            }
+        </select>
+    </div>
+    <div class="col-12 col-md-5">
+        <label for="targetRunId" class="form-label">Target Run (B)</label>
+        <select id="targetRunId" name="targetRunId" class="form-select form-select-sm">
+            @foreach (var run in Model.Runs)
+            {
+                <option value="@run.RunId" selected="@(string.Equals(run.RunId, Model.TargetRunId, StringComparison.OrdinalIgnoreCase))">@run.RunId (@run.StartedAt.UtcDateTime.ToString("yyyy-MM-dd HH:mm"))</option>
+            }
+        </select>
+    </div>
+    <div class="col-12 col-md-2">
+        <button type="submit" class="btn btn-sm btn-primary w-100">Compare</button>
+    </div>
+</form>
+
+@if (Model.Comparison is not null)
+{
+    <div class="row g-3 mb-3">
+        <div class="col-12 col-md-4"><div class="card"><div class="card-body"><div class="small text-body-secondary">New (B \ A)</div><div class="h4 mb-0">@Model.Comparison.NewCount</div></div></div></div>
+        <div class="col-12 col-md-4"><div class="card"><div class="card-body"><div class="small text-body-secondary">Fixed (A \ B)</div><div class="h4 mb-0">@Model.Comparison.FixedCount</div></div></div></div>
+        <div class="col-12 col-md-4"><div class="card"><div class="card-body"><div class="small text-body-secondary">Unchanged (A ∩ B)</div><div class="h4 mb-0">@Model.Comparison.UnchangedCount</div></div></div></div>
+    </div>
+
+    <section class="mb-4">
+        <h2 class="h5 mb-2">New Findings</h2>
+        <div class="table-responsive">
+            <table class="table table-sm table-striped align-middle">
+                <thead><tr><th>Rule</th><th>File</th><th>Line</th><th>Severity</th><th>Message</th></tr></thead>
+                <tbody>
+                @foreach (var finding in Model.Comparison.NewFindings)
+                {
+                    <tr>
+                        <td class="font-monospace small">@finding.RuleId</td>
+                        <td class="font-monospace small">@finding.FilePath</td>
+                        <td>@finding.Line</td>
+                        <td>@finding.Severity</td>
+                        <td>@finding.Message</td>
+                    </tr>
+                }
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <section>
+        <h2 class="h5 mb-2">Fixed Findings</h2>
+        <div class="table-responsive">
+            <table class="table table-sm table-striped align-middle">
+                <thead><tr><th>Rule</th><th>File</th><th>Line</th><th>Severity</th><th>Message</th></tr></thead>
+                <tbody>
+                @foreach (var finding in Model.Comparison.FixedFindings)
+                {
+                    <tr>
+                        <td class="font-monospace small">@finding.RuleId</td>
+                        <td class="font-monospace small">@finding.FilePath</td>
+                        <td>@finding.Line</td>
+                        <td>@finding.Severity</td>
+                        <td>@finding.Message</td>
+                    </tr>
+                }
+                </tbody>
+            </table>
+        </div>
+    </section>
+}

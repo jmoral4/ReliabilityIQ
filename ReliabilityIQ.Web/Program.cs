@@ -1,6 +1,7 @@
 using ReliabilityIQ.Core.Persistence.Queries;
 using ReliabilityIQ.Web.Configuration;
 using ReliabilityIQ.Web.Data;
+using ReliabilityIQ.Web.Exports;
 using ReliabilityIQ.Web.MagicStrings;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -71,6 +72,145 @@ app.MapGet("/api/runs", async (SqliteResultsQueries queries, CancellationToken c
         infoCount = run.InfoCount,
         totalFindings = run.TotalFindings
     }));
+});
+
+app.MapGet("/api/rules", async (
+    string? category,
+    SqliteResultsQueries queries,
+    CancellationToken cancellationToken) =>
+{
+    var rules = await queries.GetRuleCatalog(category, cancellationToken).ConfigureAwait(false);
+    return Results.Ok(rules.Select(rule => new
+    {
+        ruleId = rule.RuleId,
+        title = rule.Title,
+        defaultSeverity = rule.DefaultSeverity,
+        description = rule.Description,
+        category = rule.Category,
+        effectiveState = rule.EffectiveState,
+        totalFindings = rule.TotalFindings
+    }));
+});
+
+app.MapGet("/api/rules/{ruleId}/findings", async (
+    string ruleId,
+    int? limit,
+    SqliteResultsQueries queries,
+    CancellationToken cancellationToken) =>
+{
+    var findings = await queries.GetFindingsForRuleAcrossRuns(ruleId, limit ?? 500, cancellationToken).ConfigureAwait(false);
+    return Results.Ok(findings.Select(item => new
+    {
+        runId = item.RunId,
+        repoRoot = item.RepoRoot,
+        startedAt = item.StartedAt,
+        filePath = item.FilePath,
+        line = item.Line,
+        column = item.Column,
+        severity = item.Severity,
+        message = item.Message,
+        confidence = item.Confidence,
+        fingerprint = item.Fingerprint
+    }));
+});
+
+app.MapGet("/api/run/{runId}/suppressions", async (
+    string runId,
+    SqliteResultsQueries queries,
+    CancellationToken cancellationToken) =>
+{
+    var run = await queries.GetRunById(runId, cancellationToken).ConfigureAwait(false);
+    if (run is null)
+    {
+        return Results.NotFound();
+    }
+
+    var overview = await queries.GetSuppressionOverview(runId, cancellationToken).ConfigureAwait(false);
+    return Results.Ok(new
+    {
+        runId,
+        activeFindings = overview.ActiveFindingCount,
+        suppressedFindings = overview.SuppressedFindingCount,
+        whatIfTotalFindings = overview.WhatIfTotalFindingCount,
+        countsByRule = overview.CountsByRule.Select(item => new
+        {
+            ruleId = item.RuleId,
+            title = item.Title,
+            suppressedCount = item.SuppressedCount
+        }),
+        items = overview.SuppressedFindings.Select(item => new
+        {
+            findingId = item.FindingId,
+            fileId = item.FileId,
+            filePath = item.FilePath,
+            ruleId = item.RuleId,
+            ruleTitle = item.RuleTitle,
+            severity = item.Severity,
+            confidence = item.Confidence,
+            message = item.Message,
+            suppressionReason = item.SuppressionReason,
+            suppressionSource = item.SuppressionSource,
+            metadata = item.Metadata
+        })
+    });
+});
+
+app.MapGet("/api/runs/compare", async (
+    string baselineRunId,
+    string targetRunId,
+    int? limit,
+    SqliteResultsQueries queries,
+    CancellationToken cancellationToken) =>
+{
+    var baselineRun = await queries.GetRunById(baselineRunId, cancellationToken).ConfigureAwait(false);
+    var targetRun = await queries.GetRunById(targetRunId, cancellationToken).ConfigureAwait(false);
+    if (baselineRun is null || targetRun is null)
+    {
+        return Results.NotFound();
+    }
+
+    var comparison = await queries.GetRunComparison(
+        new RunComparisonRequest(baselineRunId, targetRunId),
+        limit ?? 200,
+        cancellationToken).ConfigureAwait(false);
+
+    return Results.Ok(new
+    {
+        baselineRunId = comparison.BaselineRunId,
+        targetRunId = comparison.TargetRunId,
+        newCount = comparison.NewCount,
+        fixedCount = comparison.FixedCount,
+        unchangedCount = comparison.UnchangedCount,
+        newFindings = comparison.NewFindings,
+        fixedFindings = comparison.FixedFindings
+    });
+});
+
+app.MapGet("/api/run/{runId}/export/{format}", async (
+    string runId,
+    string format,
+    HttpRequest request,
+    SqliteResultsQueries queries,
+    CancellationToken cancellationToken) =>
+{
+    var run = await queries.GetRunById(runId, cancellationToken).ConfigureAwait(false);
+    if (run is null)
+    {
+        return Results.NotFound();
+    }
+
+    var filters = ParseFindingsFilters(request);
+    var findings = await queries.GetFindingsForExport(runId, filters, cancellationToken).ConfigureAwait(false);
+    var export = ReportExportBuilder.Build(format, run, findings, filters);
+    if (export is null)
+    {
+        return Results.BadRequest(new { error = "Unsupported export format. Use csv, json, sarif, or html." });
+    }
+
+    return Results.File(
+        fileContents: export.Value.Content,
+        contentType: export.Value.ContentType,
+        fileDownloadName: export.Value.FileName);
 });
 
 app.MapGet("/api/run/{runId}/findings", async (
@@ -434,6 +574,19 @@ static int ParseInt(string? value, int fallback)
 static string? NullIfEmpty(string? value)
 {
     return string.IsNullOrWhiteSpace(value) ? null : value;
+}
+
+static FindingsQueryFilters ParseFindingsFilters(HttpRequest request)
+{
+    return new FindingsQueryFilters(
+        Severity: NullIfEmpty(request.Query["severity"].ToString()),
+        RuleId: NullIfEmpty(request.Query["rule"].ToString()),
+        RulePrefix: NullIfEmpty(request.Query["rulePrefix"].ToString()),
+        Confidence: NullIfEmpty(request.Query["confidence"].ToString()),
+        FileCategory: NullIfEmpty(request.Query["fileCategory"].ToString()),
+        Language: NullIfEmpty(request.Query["language"].ToString()),
+        PathPrefix: NullIfEmpty(request.Query["pathPrefix"].ToString()),
+        IncludeSuppressed: ParseBool(request.Query["includeSuppressed"]));
 }
 
 static double ParseDouble(string? value, double fallback)

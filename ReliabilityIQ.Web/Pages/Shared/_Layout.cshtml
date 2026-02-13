@@ -34,6 +34,8 @@
                     <li class="nav-item"><a id="magicStringsNav" class="nav-link" href="#">Magic Strings</a></li>
                     <li class="nav-item"><a id="heatmapNav" class="nav-link" href="#">Heatmap</a></li>
                     <li class="nav-item"><a id="churnNav" class="nav-link" href="#">Churn</a></li>
+                    <li class="nav-item"><a id="rulesNav" class="nav-link" asp-page="/Rules">Rules</a></li>
+                    <li class="nav-item"><a id="exportNav" class="nav-link" href="#">Export</a></li>
                 </ul>
                 <form class="d-flex align-items-center gap-2" role="search">
                     <label for="runSelector" class="form-label mb-0 small text-body-secondary">Run</label>
@@ -68,6 +70,8 @@
         const magicStringsNav = document.getElementById("magicStringsNav");
         const heatmapNav = document.getElementById("heatmapNav");
         const churnNav = document.getElementById("churnNav");
+        const rulesNav = document.getElementById("rulesNav");
+        const exportNav = document.getElementById("exportNav");
         const runsNav = document.getElementById("runsNav");
         const path = window.location.pathname;
 
@@ -79,6 +83,8 @@
             magicStringsNav.classList.toggle("active", /\/run\/[^/]+\/magic-strings$/i.test(path));
             heatmapNav.classList.toggle("active", /\/run\/[^/]+\/heatmap$/i.test(path));
             churnNav.classList.toggle("active", /\/run\/[^/]+\/churn$/i.test(path));
+            rulesNav.classList.toggle("active", /^\/rules$/i.test(path));
+            exportNav.classList.toggle("active", /\/run\/[^/]+\/(export|compare|suppressions)$/i.test(path));
         }
 
         function getRunIdFromPath() {
@@ -94,6 +100,7 @@
                 magicStringsNav.setAttribute("href", "#");
                 heatmapNav.setAttribute("href", "#");
                 churnNav.setAttribute("href", "#");
+                exportNav.setAttribute("href", "#");
                 return;
             }
 
@@ -104,6 +111,7 @@
             magicStringsNav.setAttribute("href", `/run/${encoded}/magic-strings`);
             heatmapNav.setAttribute("href", `/run/${encoded}/heatmap`);
             churnNav.setAttribute("href", `/run/${encoded}/churn`);
+            exportNav.setAttribute("href", `/run/${encoded}/export`);
         }
 
         function routeToCurrentPageWithRun(runId) {
@@ -140,6 +148,33 @@
 
             if (/\/run\/[^/]+\/churn$/i.test(path)) {
                 window.location.href = `/run/${encoded}/churn`;
+                return;
+            }
+
+            if (/\/run\/[^/]+\/export$/i.test(path)) {
+                window.location.href = `/run/${encoded}/export`;
+                return;
+            }
+
+            if (/\/run\/[^/]+\/compare$/i.test(path)) {
+                const url = new URL(window.location.href);
+                url.pathname = `/run/${encoded}/compare`;
+                const target = url.searchParams.get("targetRunId");
+                if (target) {
+                    url.searchParams.set("targetRunId", runId);
+                }
+
+                window.location.href = url.toString();
+                return;
+            }
+
+            if (/\/run\/[^/]+\/suppressions$/i.test(path)) {
+                window.location.href = `/run/${encoded}/suppressions`;
+                return;
+            }
+
+            if (/^\/rules$/i.test(path)) {
+                window.location.href = "/rules";
                 return;
             }
 

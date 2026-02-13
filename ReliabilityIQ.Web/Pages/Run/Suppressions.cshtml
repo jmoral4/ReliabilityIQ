@@ -1,0 +1,85 @@
+@page "/run/{runId}/suppressions"
+@model ReliabilityIQ.Web.Pages.Run.SuppressionsModel
+@{
+    ViewData["Title"] = "Suppressions";
+}
+
+@if (Model.Run is null || Model.Overview is null)
+{
+    <div class="alert alert-warning" role="alert">Run not found.</div>
+}
+else
+{
+    <section class="mb-3">
+        <h1 class="h3 mb-1">Suppressions</h1>
+        <div class="small text-body-secondary">
+            <span class="font-monospace">@Model.Run.RunId</span>
+            <span class="mx-2">|</span>
+            <span>Suppressed: @Model.Overview.SuppressedFindingCount</span>
+            <span class="mx-2">|</span>
+            <span>What-if Total: @Model.Overview.WhatIfTotalFindingCount</span>
+        </div>
+    </section>
+
+    <div class="row g-3 mb-3">
+        <div class="col-12 col-md-4">
+            <div class="card"><div class="card-body"><div class="small text-body-secondary">Active Findings</div><div class="h4 mb-0">@Model.Overview.ActiveFindingCount</div></div></div>
+        </div>
+        <div class="col-12 col-md-4">
+            <div class="card"><div class="card-body"><div class="small text-body-secondary">Suppressed Findings</div><div class="h4 mb-0">@Model.Overview.SuppressedFindingCount</div></div></div>
+        </div>
+        <div class="col-12 col-md-4">
+            <div class="card"><div class="card-body"><div class="small text-body-secondary">What-if Total</div><div class="h4 mb-0">@Model.Overview.WhatIfTotalFindingCount</div></div></div>
+        </div>
+    </div>
+
+    <section class="mb-4">
+        <h2 class="h5 mb-2">Count By Rule</h2>
+        <div class="table-responsive">
+            <table class="table table-sm table-striped align-middle">
+                <thead><tr><th>Rule</th><th>Title</th><th>Suppressed</th></tr></thead>
+                <tbody>
+                @foreach (var item in Model.Overview.CountsByRule)
+                {
+                    <tr>
+                        <td class="font-monospace small">@item.RuleId</td>
+                        <td>@item.Title</td>
+                        <td>@item.SuppressedCount</td>
+                    </tr>
+                }
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <section>
+        <h2 class="h5 mb-2">Suppressed Findings</h2>
+        <div class="table-responsive">
+            <table class="table table-sm table-striped align-middle">
+                <thead>
+                <tr>
+                    <th>File</th>
+                    <th>Rule</th>
+                    <th>Severity</th>
+                    <th>Source</th>
+                    <th>Reason</th>
+                    <th>Message</th>
+                </tr>
+                </thead>
+                <tbody>
+                @foreach (var finding in Model.Overview.SuppressedFindings)
+                {
+                    <tr>
+                        <td class="font-monospace small"><a asp-page="/Run/File" asp-route-runId="@Model.RunId" asp-route-fileId="@finding.FileId">@finding.FilePath</a></td>
+                        <td class="font-monospace small">@finding.RuleId</td>
+                        <td>@finding.Severity</td>
+                        <td><span class="badge text-bg-light">@finding.SuppressionSource</span></td>
+                        <td>@(string.IsNullOrWhiteSpace(finding.SuppressionReason) ? "-" : finding.SuppressionReason)</td>
+                        <td>@finding.Message</td>
+                    </tr>
+                }
+                </tbody>
+            </table>
+        </div>
+    </section>
+}
