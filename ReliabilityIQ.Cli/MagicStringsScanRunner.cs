@@ -12,7 +12,9 @@ public sealed record MagicStringsScanOptions(
     string? DatabasePath,
     int MinOccurrences,
     int Top,
-    string? ConfigPath);
+    string? ConfigPath,
+    string? RunId = null,
+    bool AppendToRun = false);
 
 public static class MagicStringsScanRunner
 {
@@ -69,7 +71,9 @@ public static class MagicStringsScanRunner
             }
 
             var candidates = analyzer.AnalyzeRepository(fileInputs, analyzerOptions, cancellationToken);
-            var runId = $"run-{DateTimeOffset.UtcNow:yyyyMMddHHmmss}-{Guid.NewGuid():N}";
+            var runId = string.IsNullOrWhiteSpace(options.RunId)
+                ? $"run-{DateTimeOffset.UtcNow:yyyyMMddHHmmss}-{Guid.NewGuid():N}"
+                : options.RunId;
 
             var findings = candidates.Select(candidate => new Finding
             {
@@ -111,7 +115,14 @@ public static class MagicStringsScanRunner
                 .GroupBy(r => r.RuleId, StringComparer.OrdinalIgnoreCase)
                 .Select(g => g.First())
                 .ToList();
-            await writer.WriteAsync(run, persistedFiles, findings, ruleDefinitions, cancellationToken: cancellationToken).ConfigureAwait(false);
+            await writer.WriteAsync(
+                    run,
+                    persistedFiles,
+                    findings,
+                    ruleDefinitions,
+                    clearRunData: !options.AppendToRun,
+                    cancellationToken: cancellationToken)
+                .ConfigureAwait(false);
 
             await PrintSummaryAsync(output, run, dbPath, candidates, options.Top).ConfigureAwait(false);
             return 0;

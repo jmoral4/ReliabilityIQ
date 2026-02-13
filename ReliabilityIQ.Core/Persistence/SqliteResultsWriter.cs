@@ -35,6 +35,7 @@ public sealed class SqliteResultsWriter
         IReadOnlyList<Finding> findings,
         IReadOnlyList<RuleDefinition> rules,
         IReadOnlyList<GitFileMetric>? gitFileMetrics = null,
+        bool clearRunData = true,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(run);
@@ -51,7 +52,10 @@ public sealed class SqliteResultsWriter
 
             await UpsertRunAsync(connection, run).ConfigureAwait(false);
             await UpsertRulesAsync(connection, rules).ConfigureAwait(false);
-            await ClearRunDataAsync(connection, run.RunId).ConfigureAwait(false);
+            if (clearRunData)
+            {
+                await ClearRunDataAsync(connection, run.RunId).ConfigureAwait(false);
+            }
 
             var fileIdByPath = await InsertFilesAsync(connection, run.RunId, files).ConfigureAwait(false);
             await InsertFindingsAsync(connection, run.RunId, findings, fileIdByPath).ConfigureAwait(false);
@@ -177,6 +181,15 @@ public sealed class SqliteResultsWriter
         IReadOnlyList<PersistedFile> files)
     {
         var fileIdByPath = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+        var existingRows = await connection.QueryAsync<(long file_id, string path)>(
+            "SELECT file_id, path FROM files WHERE run_id = @RunId;",
+            new { RunId = runId }).ConfigureAwait(false);
+
+        foreach (var row in existingRows)
+        {
+            fileIdByPath[row.path] = row.file_id;
+        }
+
         if (files.Count == 0)
         {
             return fileIdByPath;
@@ -186,9 +199,11 @@ public sealed class SqliteResultsWriter
                                  INSERT INTO files (run_id, path, category, size_bytes, hash, language)
                                  VALUES (@RunId, @Path, @Category, @SizeBytes, @Hash, @Language);
                                  """;
-        const string selectSql = "SELECT file_id, path FROM files WHERE run_id = @RunId;";
+        var newFiles = files
+            .Where(file => !fileIdByPath.ContainsKey(file.Path))
+            .ToList();
 
-        foreach (var batch in Batch(files))
+        foreach (var batch in Batch(newFiles))
         {
             await using var transaction = await connection.BeginTransactionAsync().ConfigureAwait(false);
             var payload = batch.Select(file => new
@@ -204,7 +219,9 @@ public sealed class SqliteResultsWriter
             await transaction.CommitAsync().ConfigureAwait(false);
         }
 
-        var rows = await connection.QueryAsync<(long file_id, string path)>(selectSql, new { RunId = runId }).ConfigureAwait(false);
+        var rows = await connection.QueryAsync<(long file_id, string path)>(
+            "SELECT file_id, path FROM files WHERE run_id = @RunId;",
+            new { RunId = runId }).ConfigureAwait(false);
         foreach (var row in rows)
         {
             fileIdByPath[row.path] = row.file_id;

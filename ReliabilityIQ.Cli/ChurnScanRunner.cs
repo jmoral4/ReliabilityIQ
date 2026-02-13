@@ -12,7 +12,9 @@ public sealed record ChurnScanOptions(
     string RepoPath,
     string? DatabasePath,
     string? Since,
-    string? ServiceMapPath = null);
+    string? ServiceMapPath = null,
+    string? RunId = null,
+    bool AppendToRun = false);
 
 public static class ChurnScanRunner
 {
@@ -68,7 +70,9 @@ public static class ChurnScanRunner
 
             CompleteProgressReporter(output);
 
-            var runId = $"run-{DateTimeOffset.UtcNow:yyyyMMddHHmmss}-{Guid.NewGuid():N}";
+            var runId = string.IsNullOrWhiteSpace(options.RunId)
+                ? $"run-{DateTimeOffset.UtcNow:yyyyMMddHHmmss}-{Guid.NewGuid():N}"
+                : options.RunId;
             var run = new ScanRun(
                 RunId: runId,
                 RepoRoot: repoRoot,
@@ -133,7 +137,14 @@ public static class ChurnScanRunner
 
             var dbPath = ResolveDatabasePath(options.DatabasePath, repoRoot);
             var writer = new SqliteResultsWriter(dbPath);
-            await writer.WriteAsync(run, persistedFiles, findings, GitHistoryRuleDefinitions.Rules, metrics, cancellationToken)
+            await writer.WriteAsync(
+                    run,
+                    persistedFiles,
+                    findings,
+                    GitHistoryRuleDefinitions.Rules,
+                    metrics,
+                    clearRunData: !options.AppendToRun,
+                    cancellationToken: cancellationToken)
                 .ConfigureAwait(false);
 
             await PrintSummaryAsync(output, run, dbPath, analysis).ConfigureAwait(false);

@@ -11,7 +11,9 @@ public sealed record DeployScanOptions(
     string RepoPath,
     string? DatabasePath,
     string? Ev2PathMarkers,
-    string? AdoPathMarkers);
+    string? AdoPathMarkers,
+    string? RunId = null,
+    bool AppendToRun = false);
 
 public static class DeployScanRunner
 {
@@ -99,7 +101,9 @@ public static class DeployScanRunner
                 findings.AddRange(batch);
             }
 
-            var runId = $"run-{DateTimeOffset.UtcNow:yyyyMMddHHmmss}-{Guid.NewGuid():N}";
+            var runId = string.IsNullOrWhiteSpace(options.RunId)
+                ? $"run-{DateTimeOffset.UtcNow:yyyyMMddHHmmss}-{Guid.NewGuid():N}"
+                : options.RunId;
             var run = new ScanRun(
                 RunId: runId,
                 RepoRoot: repoRoot,
@@ -131,7 +135,13 @@ public static class DeployScanRunner
 
             var dbPath = ResolveDatabasePath(options.DatabasePath, repoRoot);
             var writer = new SqliteResultsWriter(dbPath);
-            await writer.WriteAsync(run, persistedFiles, normalizedFindings, ArtifactRuleDefinitions.Rules, cancellationToken: cancellationToken)
+            await writer.WriteAsync(
+                    run,
+                    persistedFiles,
+                    normalizedFindings,
+                    ArtifactRuleDefinitions.Rules,
+                    clearRunData: !options.AppendToRun,
+                    cancellationToken: cancellationToken)
                 .ConfigureAwait(false);
 
             await PrintSummaryAsync(output, run, dbPath, normalizedFindings).ConfigureAwait(false);

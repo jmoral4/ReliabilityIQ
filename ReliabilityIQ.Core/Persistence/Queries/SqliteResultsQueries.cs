@@ -418,10 +418,14 @@ public sealed class SqliteResultsQueries
         await using var connection = _connectionFactory();
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
 
-        var rows = await connection.QueryAsync<DeploymentSeveritySummaryItem>(
+        var rows = await connection.QueryAsync<DeploymentSeveritySummaryRow>(
             new CommandDefinition(sql, new { RunId = runId }, cancellationToken: cancellationToken)).ConfigureAwait(false);
 
-        return rows.ToList();
+        return rows.Select(row => new DeploymentSeveritySummaryItem(
+            row.ArtifactType,
+            ToLong(row.ErrorCount),
+            ToLong(row.WarningCount),
+            ToLong(row.InfoCount))).ToList();
     }
 
     public async Task<IReadOnlyList<DeploymentArtifactRiskItem>> GetTopDeploymentArtifactsByRisk(
@@ -2106,5 +2110,16 @@ public sealed class SqliteResultsQueries
         public object? InfoCount { get; set; }
 
         public object? RiskScore { get; set; }
+    }
+
+    private sealed class DeploymentSeveritySummaryRow
+    {
+        public string ArtifactType { get; set; } = string.Empty;
+
+        public object? ErrorCount { get; set; }
+
+        public object? WarningCount { get; set; }
+
+        public object? InfoCount { get; set; }
     }
 }

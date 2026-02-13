@@ -199,8 +199,16 @@ public static class Program
                 failOnSeverity = parsedSeverity;
             }
 
+            var sharedRunId = $"run-{DateTimeOffset.UtcNow:yyyyMMddHHmmss}-{Guid.NewGuid():N}";
+
             var portabilityExitCode = await PortabilityScanRunner.ExecuteAsync(
-                new PortabilityScanOptions(repo.FullName, db?.FullName, failOnSeverity, suppressions?.FullName),
+                new PortabilityScanOptions(
+                    repo.FullName,
+                    db?.FullName,
+                    failOnSeverity,
+                    suppressions?.FullName,
+                    RunId: sharedRunId,
+                    AppendToRun: false),
                 Console.Out,
                 CancellationToken.None).ConfigureAwait(false);
 
@@ -211,7 +219,14 @@ public static class Program
             }
 
             var magicExitCode = await MagicStringsScanRunner.ExecuteAsync(
-                new MagicStringsScanOptions(repo.FullName, db?.FullName, minOccurrences ?? 0, top ?? 0, config?.FullName),
+                new MagicStringsScanOptions(
+                    repo.FullName,
+                    db?.FullName,
+                    minOccurrences ?? 0,
+                    top ?? 0,
+                    config?.FullName,
+                    RunId: sharedRunId,
+                    AppendToRun: true),
                 Console.Out,
                 CancellationToken.None).ConfigureAwait(false);
 
@@ -222,7 +237,13 @@ public static class Program
             }
 
             var churnExitCode = await ChurnScanRunner.ExecuteAsync(
-                new ChurnScanOptions(repo.FullName, db?.FullName, since, serviceMap?.FullName),
+                new ChurnScanOptions(
+                    repo.FullName,
+                    db?.FullName,
+                    since,
+                    serviceMap?.FullName,
+                    RunId: sharedRunId,
+                    AppendToRun: true),
                 Console.Out,
                 CancellationToken.None).ConfigureAwait(false);
 
@@ -233,7 +254,13 @@ public static class Program
             }
 
             var deployExitCode = await DeployScanRunner.ExecuteAsync(
-                new DeployScanOptions(repo.FullName, db?.FullName, ev2PathMarkers, adoPathMarkers),
+                new DeployScanOptions(
+                    repo.FullName,
+                    db?.FullName,
+                    ev2PathMarkers,
+                    adoPathMarkers,
+                    RunId: sharedRunId,
+                    AppendToRun: true),
                 Console.Out,
                 CancellationToken.None).ConfigureAwait(false);
 

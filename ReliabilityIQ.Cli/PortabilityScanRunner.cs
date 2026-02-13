@@ -12,7 +12,13 @@ using ReliabilityIQ.Core.Portability;
 
 namespace ReliabilityIQ.Cli;
 
-public sealed record PortabilityScanOptions(string RepoPath, string? DatabasePath, FindingSeverity? FailOnSeverity, string? SuppressionsPath = null);
+public sealed record PortabilityScanOptions(
+    string RepoPath,
+    string? DatabasePath,
+    FindingSeverity? FailOnSeverity,
+    string? SuppressionsPath = null,
+    string? RunId = null,
+    bool AppendToRun = false);
 
 public static class PortabilityScanRunner
 {
@@ -116,7 +122,9 @@ public static class PortabilityScanRunner
             findingsChannel.Writer.TryComplete();
             await findingCollector.ConfigureAwait(false);
 
-            var runId = $"run-{DateTimeOffset.UtcNow:yyyyMMddHHmmss}-{Guid.NewGuid():N}";
+            var runId = string.IsNullOrWhiteSpace(options.RunId)
+                ? $"run-{DateTimeOffset.UtcNow:yyyyMMddHHmmss}-{Guid.NewGuid():N}"
+                : options.RunId;
             var run = new ScanRun(
                 RunId: runId,
                 RepoRoot: repoRoot,
@@ -155,7 +163,13 @@ public static class PortabilityScanRunner
                 .Select(g => g.First())
                 .ToList();
 
-            await writer.WriteAsync(run, persistedFiles, normalizedFindings, ruleDefinitions, cancellationToken: cancellationToken)
+            await writer.WriteAsync(
+                    run,
+                    persistedFiles,
+                    normalizedFindings,
+                    ruleDefinitions,
+                    clearRunData: !options.AppendToRun,
+                    cancellationToken: cancellationToken)
                 .ConfigureAwait(false);
 
             await PrintSummaryAsync(output, run, dbPath, normalizedFindings).ConfigureAwait(false);
