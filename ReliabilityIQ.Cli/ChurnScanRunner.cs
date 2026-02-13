@@ -33,7 +33,8 @@ public static class ChurnScanRunner
             var sinceDays = ParseSinceDays(options.Since);
             var startedAt = DateTimeOffset.UtcNow;
             var repoRoot = RepoDiscovery.FindRepoRoot(options.RepoPath);
-            var files = RepoDiscovery.DiscoverFiles(repoRoot);
+            var files = RepoDiscovery.DiscoverFiles(repoRoot, options: new RepoDiscoveryOptions(ComputeContentHash: false));
+            var progressReporter = CreateProgressReporter(output);
 
             var analyzer = new GitHistoryAnalyzer();
             var analysis = analyzer.AnalyzeRepository(
@@ -44,7 +45,10 @@ public static class ChurnScanRunner
                     SinceDays = sinceDays,
                     ServiceBoundaryMappings = LoadServiceBoundaryMappings(options.ServiceMapPath, repoRoot)
                 },
-                cancellationToken);
+                cancellationToken,
+                progressReporter);
+
+            CompleteProgressReporter(output);
 
             var runId = $"run-{DateTimeOffset.UtcNow:yyyyMMddHHmmss}-{Guid.NewGuid():N}";
             var run = new ScanRun(
@@ -281,5 +285,28 @@ public static class ChurnScanRunner
                 await output.WriteLineAsync($"  churn_p90={module.ChurnScoreP90,8:0.###} files={module.FileCount,4} {module.ModuleKey}").ConfigureAwait(false);
             }
         }
+    }
+
+    private static Action<int> CreateProgressReporter(TextWriter output)
+    {
+        var lastDisplayed = -10;
+        return percent =>
+        {
+            var display = Math.Clamp((percent / 10) * 10, 0, 100);
+            if (display <= lastDisplayed)
+            {
+                return;
+            }
+
+            lastDisplayed = display;
+            output.Write($"\rScanning ...{display}%");
+            output.Flush();
+        };
+    }
+
+    private static void CompleteProgressReporter(TextWriter output)
+    {
+        output.WriteLine();
+        output.Flush();
     }
 }

@@ -55,6 +55,10 @@ nunit-*.xml
 
 # Visual Studio
 .vs/
+*.user
+**/Properties/launchSettings.json
 
 # Database files
 *.db
+*.db-shm
+*.db-wal

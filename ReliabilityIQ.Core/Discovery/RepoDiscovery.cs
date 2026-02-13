@@ -6,7 +6,8 @@ public sealed record RepoDiscoveryOptions(
     bool UseGitIgnore = true,
     long MaxFileSizeBytes = 2 * 1024 * 1024,
     IReadOnlyCollection<string>? AdditionalExcludeDirectories = null,
-    bool ExcludeDotDirectories = true);
+    bool ExcludeDotDirectories = true,
+    bool ComputeContentHash = true);
 
 public static class RepoDiscovery
 {
@@ -121,7 +122,7 @@ public static class RepoDiscovery
                     continue;
                 }
 
-                var hash = ComputeSha256(file);
+                var hash = options.ComputeContentHash ? ComputeSha256(file) : string.Empty;
                 discovered.Add(new DiscoveredFile(
                     FullPath: file,
                     RelativePath: relativePath,

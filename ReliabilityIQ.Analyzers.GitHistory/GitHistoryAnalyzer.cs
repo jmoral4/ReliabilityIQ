@@ -31,7 +31,8 @@ public sealed class GitHistoryAnalyzer : IAnalyzer
         string repoRoot,
         IReadOnlyList<GitHistoryFileInput> files,
         GitHistoryAnalysisOptions options,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        Action<int>? progressCallback = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(repoRoot);
         ArgumentNullException.ThrowIfNull(files);
@@ -54,16 +55,20 @@ public sealed class GitHistoryAnalyzer : IAnalyzer
 
         var trackedSet = normalizedInputs.Select(f => f.FilePath).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var byPath = normalizedInputs.ToDictionary(f => f.FilePath, f => new FileAccumulator(f.FilePath, f.Category), StringComparer.OrdinalIgnoreCase);
+        var processedWorkItems = 0;
+        var lastReportedPercent = -1;
 
         var filter = new CommitFilter { SortBy = CommitSortStrategies.Time | CommitSortStrategies.Topological };
-        foreach (var commit in repository.Commits.QueryBy(filter))
+        var commits = repository.Commits.QueryBy(filter)
+            .Where(commit => commit.Author.When >= windowStart)
+            .ToList();
+        var totalWorkItems = Math.Max(1, commits.Count + normalizedInputs.Length);
+        ReportProgress(progressCallback, totalWorkItems, processedWorkItems, ref lastReportedPercent);
+
+        foreach (var commit in commits)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var commitWhen = commit.Author.When;
-            if (commitWhen < windowStart)
-            {
-                continue;
-            }
 
             var parent = commit.Parents.FirstOrDefault();
             var treeChanges = parent is null
@@ -109,6 +114,9 @@ public sealed class GitHistoryAnalyzer : IAnalyzer
                     accumulator.AddLines(patchEntry.LinesAdded, patchEntry.LinesDeleted);
                 }
             }
+
+            processedWorkItems++;
+            ReportProgress(progressCallback, totalWorkItems, processedWorkItems, ref lastReportedPercent);
         }
 
         var projectMarkers = BuildProjectMarkers(normalizedInputs);
@@ -133,6 +141,9 @@ public sealed class GitHistoryAnalyzer : IAnalyzer
                 directoryKey: GetDirectoryModuleKey(input.FilePath),
                 projectKey: GetProjectModuleKey(input.FilePath, projectMarkers),
                 serviceKey: GetServiceModuleKey(input.FilePath, options.ServiceBoundaryMappings));
+
+            processedWorkItems++;
+            ReportProgress(progressCallback, totalWorkItems, processedWorkItems, ref lastReportedPercent);
         }
 
         var results = normalizedInputs
@@ -153,8 +164,30 @@ public sealed class GitHistoryAnalyzer : IAnalyzer
             ServiceAggregates: serviceAggregates,
             HeadCommitSha: repository.Head?.Tip?.Sha);
 
+        if (lastReportedPercent < 100)
+        {
+            progressCallback?.Invoke(100);
+        }
+
         Cache.TryAdd(cacheKey, output);
         return output;
+    }
+
+    private static void ReportProgress(Action<int>? progressCallback, int totalWorkItems, int processedWorkItems, ref int lastReportedPercent)
+    {
+        if (progressCallback is null)
+        {
+            return;
+        }
+
+        var percent = (int)Math.Clamp(Math.Floor((double)processedWorkItems * 100d / totalWorkItems), 0d, 100d);
+        if (percent == lastReportedPercent)
+        {
+            return;
+        }
+
+        lastReportedPercent = percent;
+        progressCallback(percent);
     }
 
     public static IReadOnlyList<GitModuleAggregate> AggregateModules(

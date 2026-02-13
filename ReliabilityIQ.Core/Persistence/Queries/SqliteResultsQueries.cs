@@ -345,10 +345,10 @@ public sealed class SqliteResultsQueries
         await using var connection = _connectionFactory();
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
 
-        var rows = await connection.QueryAsync<RuleSummaryItem>(
+        var rows = await connection.QueryAsync<RuleSummaryRow>(
             new CommandDefinition(sql, new { RunId = runId }, cancellationToken: cancellationToken)).ConfigureAwait(false);
 
-        return rows.ToList();
+        return rows.Select(MapRuleSummaryItem).ToList();
     }
 
     public async Task<FileDetailItem?> GetFileById(string runId, long fileId, CancellationToken cancellationToken = default)
@@ -593,6 +593,19 @@ public sealed class SqliteResultsQueries
         ToLong(row.WarningCount),
         ToLong(row.InfoCount));
 
+    private static RuleSummaryItem MapRuleSummaryItem(RuleSummaryRow row)
+    {
+        var ruleId = ToText(row.RuleId);
+        return new RuleSummaryItem(
+            ruleId,
+            ToText(row.Title, ruleId),
+            ToNullableText(row.Description),
+            ToLong(row.FindingCount),
+            ToLong(row.ErrorCount),
+            ToLong(row.WarningCount),
+            ToLong(row.InfoCount));
+    }
+
     private static int ToInt(long value)
     {
         return value switch
@@ -619,6 +632,28 @@ public sealed class SqliteResultsQueries
             byte[] bytes => ParseLong(bytes),
             _ => Convert.ToInt64(value, CultureInfo.InvariantCulture)
         };
+    }
+
+    private static string ToText(object? value, string fallback = "")
+    {
+        return value switch
+        {
+            null => fallback,
+            string text => text,
+            byte[] bytes => Encoding.UTF8.GetString(bytes),
+            _ => Convert.ToString(value, CultureInfo.InvariantCulture) ?? fallback
+        };
+    }
+
+    private static string? ToNullableText(object? value)
+    {
+        if (value is null)
+        {
+            return null;
+        }
+
+        var text = ToText(value);
+        return string.IsNullOrEmpty(text) ? null : text;
     }
 
     private static long ParseLong(byte[] bytes)
@@ -682,6 +717,23 @@ public sealed class SqliteResultsQueries
         public string? Category { get; set; }
 
         public string? Language { get; set; }
+
+        public object? FindingCount { get; set; }
+
+        public object? ErrorCount { get; set; }
+
+        public object? WarningCount { get; set; }
+
+        public object? InfoCount { get; set; }
+    }
+
+    private sealed class RuleSummaryRow
+    {
+        public object? RuleId { get; set; }
+
+        public object? Title { get; set; }
+
+        public object? Description { get; set; }
 
         public object? FindingCount { get; set; }
 
