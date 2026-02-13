@@ -47,6 +47,7 @@ public sealed class DependencyAnalyzer
             .Select(d => NormalizeDependency(d, centralNuGetVersions))
             .DistinctBy(d => $"{d.Ecosystem}:{d.Name}:{d.FilePath}:{d.Line}:{d.VersionSpec}", StringComparer.OrdinalIgnoreCase)
             .ToList();
+        var latestVersionByPackage = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var eol in eolMatches)
         {
@@ -68,6 +69,16 @@ public sealed class DependencyAnalyzer
         foreach (var dependency in normalizedDependencies)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            var packageKey = $"{dependency.Ecosystem}:{dependency.Name}";
+            if (!latestVersionByPackage.TryGetValue(packageKey, out var latestVersion))
+            {
+                latestVersion = await _osvClient.QueryLatestVersionAsync(
+                        dependency.Ecosystem,
+                        dependency.Name,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+                latestVersionByPackage[packageKey] = latestVersion;
+            }
 
             if (!dependency.IsPinned)
             {
@@ -82,7 +93,8 @@ public sealed class DependencyAnalyzer
                         engine = "deps",
                         dependency = dependency.Name,
                         ecosystem = dependency.Ecosystem.ToString(),
-                        versionSpec = dependency.VersionSpec
+                        versionSpec = dependency.VersionSpec,
+                        latestVersion
                     }));
             }
 
@@ -123,6 +135,7 @@ public sealed class DependencyAnalyzer
                     dependency = dependency.Name,
                     ecosystem = dependency.Ecosystem.ToString(),
                     version = dependency.ExactVersion,
+                    latestVersion,
                     vulnerabilities = vulns.Select(v => new
                     {
                         id = v.AdvisoryId,

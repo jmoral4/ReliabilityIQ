@@ -55,6 +55,33 @@ public sealed class HttpOsvClient : IOsvClient
             .ToList();
     }
 
+    public async Task<string?> QueryLatestVersionAsync(
+        DependencyEcosystem ecosystem,
+        string packageName,
+        CancellationToken cancellationToken = default)
+    {
+        if (ecosystem == DependencyEcosystem.Unknown || string.IsNullOrWhiteSpace(packageName))
+        {
+            return null;
+        }
+
+        try
+        {
+            return ecosystem switch
+            {
+                DependencyEcosystem.NuGet => await QueryNuGetLatestVersionAsync(packageName, cancellationToken).ConfigureAwait(false),
+                DependencyEcosystem.PyPI => await QueryPyPiLatestVersionAsync(packageName, cancellationToken).ConfigureAwait(false),
+                DependencyEcosystem.Cargo => await QueryCargoLatestVersionAsync(packageName, cancellationToken).ConfigureAwait(false),
+                DependencyEcosystem.Npm => await QueryNpmLatestVersionAsync(packageName, cancellationToken).ConfigureAwait(false),
+                _ => null
+            };
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
     private static DependencyVulnerabilitySeverity ResolveSeverity(OsvVuln vuln)
     {
         var labels = vuln.Severity?.Select(s => s.Score).Where(x => !string.IsNullOrWhiteSpace(x)).ToList() ?? [];
@@ -132,6 +159,34 @@ public sealed class HttpOsvClient : IOsvClient
         };
     }
 
+    private async Task<string?> QueryNuGetLatestVersionAsync(string packageName, CancellationToken cancellationToken)
+    {
+        var url = $"https://api.nuget.org/v3-flatcontainer/{Uri.EscapeDataString(packageName.ToLowerInvariant())}/index.json";
+        var payload = await _httpClient.GetFromJsonAsync<NuGetVersionsResponse>(url, cancellationToken).ConfigureAwait(false);
+        return payload?.Versions?.LastOrDefault();
+    }
+
+    private async Task<string?> QueryPyPiLatestVersionAsync(string packageName, CancellationToken cancellationToken)
+    {
+        var url = $"https://pypi.org/pypi/{Uri.EscapeDataString(packageName)}/json";
+        var payload = await _httpClient.GetFromJsonAsync<PyPiPackageResponse>(url, cancellationToken).ConfigureAwait(false);
+        return payload?.Info?.Version;
+    }
+
+    private async Task<string?> QueryCargoLatestVersionAsync(string packageName, CancellationToken cancellationToken)
+    {
+        var url = $"https://crates.io/api/v1/crates/{Uri.EscapeDataString(packageName)}";
+        var payload = await _httpClient.GetFromJsonAsync<CargoPackageResponse>(url, cancellationToken).ConfigureAwait(false);
+        return payload?.Crate?.MaxStableVersion ?? payload?.Crate?.MaxVersion;
+    }
+
+    private async Task<string?> QueryNpmLatestVersionAsync(string packageName, CancellationToken cancellationToken)
+    {
+        var url = $"https://registry.npmjs.org/{Uri.EscapeDataString(packageName)}/latest";
+        var payload = await _httpClient.GetFromJsonAsync<NpmPackageResponse>(url, cancellationToken).ConfigureAwait(false);
+        return payload?.Version;
+    }
+
     private sealed class OsvQueryRequest
     {
         public OsvPackage? Package { get; set; }
@@ -160,5 +215,36 @@ public sealed class HttpOsvClient : IOsvClient
     {
         public string? Type { get; set; }
         public string? Score { get; set; }
+    }
+
+    private sealed class NuGetVersionsResponse
+    {
+        public List<string>? Versions { get; set; }
+    }
+
+    private sealed class PyPiPackageResponse
+    {
+        public PyPiInfo? Info { get; set; }
+    }
+
+    private sealed class PyPiInfo
+    {
+        public string? Version { get; set; }
+    }
+
+    private sealed class CargoPackageResponse
+    {
+        public CargoCrate? Crate { get; set; }
+    }
+
+    private sealed class CargoCrate
+    {
+        public string? MaxVersion { get; set; }
+        public string? MaxStableVersion { get; set; }
+    }
+
+    private sealed class NpmPackageResponse
+    {
+        public string? Version { get; set; }
     }
 }

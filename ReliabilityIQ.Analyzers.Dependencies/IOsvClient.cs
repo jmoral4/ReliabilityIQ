@@ -7,4 +7,9 @@ public interface IOsvClient
         string packageName,
         string version,
         CancellationToken cancellationToken = default);
+
+    Task<string?> QueryLatestVersionAsync(
+        DependencyEcosystem ecosystem,
+        string packageName,
+        CancellationToken cancellationToken = default);
 }

@@ -126,6 +126,15 @@ public sealed class Phase19ConfigDriftAndDependenciesTests : IDisposable
             [
                 new DependencyVulnerability("RUSTSEC-0000-0000", DependencyVulnerabilitySeverity.Medium, "Medium severity sample")
             ]
+        },
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["NuGet|Newtonsoft.Json"] = "13.0.3",
+            ["NuGet|Serilog"] = "3.1.0",
+            ["PyPI|requests"] = "2.32.3",
+            ["PyPI|flask"] = "3.0.3",
+            ["crates.io|serde"] = "1.0.197",
+            ["crates.io|tokio"] = "1.38.1"
         });
 
         var exitCode = await DependenciesScanRunner.ExecuteAsync(
@@ -151,6 +160,12 @@ public sealed class Phase19ConfigDriftAndDependenciesTests : IDisposable
 
         var eolCount = await connection.ExecuteScalarAsync<long>("SELECT COUNT(*) FROM findings WHERE rule_id='deps.eol.framework';");
         Assert.True(eolCount >= 1);
+
+        var dependencyMetadata = (await connection.QueryAsync<string>(
+            "SELECT metadata FROM findings WHERE rule_id IN ('deps.vulnerable.critical','deps.vulnerable.high','deps.vulnerable.medium','deps.unpinned_version');"))
+            .ToList();
+        Assert.NotEmpty(dependencyMetadata);
+        Assert.All(dependencyMetadata, metadata => Assert.Contains("\"latestVersion\":", metadata, StringComparison.Ordinal));
     }
 
     public void Dispose()
@@ -164,10 +179,14 @@ public sealed class Phase19ConfigDriftAndDependenciesTests : IDisposable
     private sealed class FakeOsvClient : IOsvClient
     {
         private readonly IReadOnlyDictionary<string, IReadOnlyList<DependencyVulnerability>> _responses;
+        private readonly IReadOnlyDictionary<string, string> _latestVersions;
 
-        public FakeOsvClient(IReadOnlyDictionary<string, IReadOnlyList<DependencyVulnerability>> responses)
+        public FakeOsvClient(
+            IReadOnlyDictionary<string, IReadOnlyList<DependencyVulnerability>> responses,
+            IReadOnlyDictionary<string, string> latestVersions)
         {
             _responses = responses;
+            _latestVersions = latestVersions;
         }
 
         public Task<IReadOnlyList<DependencyVulnerability>> QueryVulnerabilitiesAsync(
@@ -183,6 +202,15 @@ public sealed class Phase19ConfigDriftAndDependenciesTests : IDisposable
             }
 
             return Task.FromResult<IReadOnlyList<DependencyVulnerability>>([]);
+        }
+
+        public Task<string?> QueryLatestVersionAsync(
+            DependencyEcosystem ecosystem,
+            string packageName,
+            CancellationToken cancellationToken = default)
+        {
+            var key = $"{ToOsvEcosystem(ecosystem)}|{packageName}";
+            return Task.FromResult(_latestVersions.TryGetValue(key, out var latestVersion) ? latestVersion : null);
         }
 
         private static string ToOsvEcosystem(DependencyEcosystem ecosystem)
