@@ -14,6 +14,7 @@ public static class Program
         scan.AddCommand(CreatePortabilityCommand());
         scan.AddCommand(CreateMagicStringsCommand());
         scan.AddCommand(CreateChurnCommand());
+        scan.AddCommand(CreateDeployCommand());
         scan.AddCommand(CreateAllScansCommand());
         root.AddCommand(scan);
 
@@ -123,7 +124,7 @@ public static class Program
 
     private static Command CreateAllScansCommand()
     {
-        var command = new Command("all", "Run portability, magic strings, and churn scans");
+        var command = new Command("all", "Run portability, magic strings, churn, and deploy scans");
 
         var repoOption = new Option<DirectoryInfo>("--repo", "Repository path to scan")
         {
@@ -137,6 +138,8 @@ public static class Program
         var configOption = new Option<FileInfo?>("--config", "Optional magic strings YAML config path (default: <repo-root>/reliabilityiq.magicstrings.yaml)");
         var sinceOption = new Option<string>("--since", () => "365d", "Git lookback window for churn scan (e.g., 90d, 180d, 365d).");
         var serviceMapOption = new Option<FileInfo?>("--service-map", "Optional service boundary mapping file (format: ServiceName=glob).");
+        var ev2PathMarkersOption = new Option<string?>("--ev2-path-markers", "Semicolon-delimited EV2 path markers override.");
+        var adoPathMarkersOption = new Option<string?>("--ado-path-markers", "Semicolon-delimited ADO path markers override.");
 
         command.AddOption(repoOption);
         command.AddOption(dbOption);
@@ -147,6 +150,8 @@ public static class Program
         command.AddOption(configOption);
         command.AddOption(sinceOption);
         command.AddOption(serviceMapOption);
+        command.AddOption(ev2PathMarkersOption);
+        command.AddOption(adoPathMarkersOption);
 
         command.SetHandler(async context =>
         {
@@ -159,6 +164,8 @@ public static class Program
             var config = context.ParseResult.GetValueForOption(configOption);
             var since = context.ParseResult.GetValueForOption(sinceOption)!;
             var serviceMap = context.ParseResult.GetValueForOption(serviceMapOption);
+            var ev2PathMarkers = context.ParseResult.GetValueForOption(ev2PathMarkersOption);
+            var adoPathMarkers = context.ParseResult.GetValueForOption(adoPathMarkersOption);
 
             if (!TryParseFailOn(failOn, out var failOnSeverity))
             {
@@ -194,7 +201,18 @@ public static class Program
                 Console.Out,
                 CancellationToken.None).ConfigureAwait(false);
 
-            Environment.ExitCode = churnExitCode == 2 ? 2 : portabilityExitCode;
+            if (churnExitCode == 2)
+            {
+                Environment.ExitCode = 2;
+                return;
+            }
+
+            var deployExitCode = await DeployScanRunner.ExecuteAsync(
+                new DeployScanOptions(repo.FullName, db?.FullName, ev2PathMarkers, adoPathMarkers),
+                Console.Out,
+                CancellationToken.None).ConfigureAwait(false);
+
+            Environment.ExitCode = deployExitCode == 2 ? 2 : portabilityExitCode;
         });
 
         return command;
@@ -224,6 +242,39 @@ public static class Program
             var exitCode = await ChurnScanRunner.ExecuteAsync(options, Console.Out, CancellationToken.None).ConfigureAwait(false);
             Environment.ExitCode = exitCode;
         }, repoOption, dbOption, sinceOption, serviceMapOption);
+
+        return command;
+    }
+
+    private static Command CreateDeployCommand()
+    {
+        var command = new Command("deploy", "Run EV2/ADO deployment artifact scan and persist findings to SQLite");
+
+        var repoOption = new Option<DirectoryInfo>("--repo", "Repository path to scan")
+        {
+            IsRequired = true
+        };
+
+        var dbOption = new Option<FileInfo?>("--db", "SQLite database file path (default: <repo-root>/reliabilityiq-results.db)");
+        var ev2PathMarkersOption = new Option<string?>("--ev2-path-markers", "Semicolon-delimited EV2 path markers override.");
+        var adoPathMarkersOption = new Option<string?>("--ado-path-markers", "Semicolon-delimited ADO path markers override.");
+
+        command.AddOption(repoOption);
+        command.AddOption(dbOption);
+        command.AddOption(ev2PathMarkersOption);
+        command.AddOption(adoPathMarkersOption);
+
+        command.SetHandler(async (repo, db, ev2PathMarkers, adoPathMarkers) =>
+        {
+            var options = new DeployScanOptions(
+                RepoPath: repo.FullName,
+                DatabasePath: db?.FullName,
+                Ev2PathMarkers: ev2PathMarkers,
+                AdoPathMarkers: adoPathMarkers);
+
+            var exitCode = await DeployScanRunner.ExecuteAsync(options, Console.Out, CancellationToken.None).ConfigureAwait(false);
+            Environment.ExitCode = exitCode;
+        }, repoOption, dbOption, ev2PathMarkersOption, adoPathMarkersOption);
 
         return command;
     }

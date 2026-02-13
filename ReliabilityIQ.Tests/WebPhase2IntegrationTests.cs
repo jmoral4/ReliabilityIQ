@@ -37,12 +37,16 @@ public sealed class WebPhase2IntegrationTests : IDisposable
         var findings = await client.GetAsync($"/run/{Uri.EscapeDataString(_runId)}/findings");
         var summary = await client.GetAsync($"/run/{Uri.EscapeDataString(_runId)}/summary");
         var magicStrings = await client.GetAsync($"/run/{Uri.EscapeDataString(_runId)}/magic-strings");
+        var heatmap = await client.GetAsync($"/run/{Uri.EscapeDataString(_runId)}/heatmap");
+        var churn = await client.GetAsync($"/run/{Uri.EscapeDataString(_runId)}/churn");
         var fileDetail = await client.GetAsync($"/run/{Uri.EscapeDataString(_runId)}/file/{_fileId}");
 
         Assert.Equal(HttpStatusCode.OK, home.StatusCode);
         Assert.Equal(HttpStatusCode.OK, findings.StatusCode);
         Assert.Equal(HttpStatusCode.OK, summary.StatusCode);
         Assert.Equal(HttpStatusCode.OK, magicStrings.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, heatmap.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, churn.StatusCode);
         Assert.Equal(HttpStatusCode.OK, fileDetail.StatusCode);
     }
 
@@ -183,6 +187,72 @@ public sealed class WebPhase2IntegrationTests : IDisposable
         Assert.All(ruleIds, ruleId => Assert.StartsWith("magic-string.", ruleId));
     }
 
+    [Fact]
+    public async Task ChurnApis_ReturnDataTablesAndOwnershipShape()
+    {
+        await SeedDatabaseAsync();
+
+        using var factory = new TestWebApplicationFactory(_dbPath);
+        using var client = factory.CreateClient();
+
+        var churnResponse = await client.GetAsync(
+            $"/api/run/{Uri.EscapeDataString(_runId)}/churn?draw=5&start=0&length=10&order[0][column]=1&order[0][dir]=desc&columns[1][name]=churnScore&minChurnScore=1.0&pathPrefix=src/");
+        var ownershipResponse = await client.GetAsync($"/api/run/{Uri.EscapeDataString(_runId)}/churn/ownership");
+
+        Assert.Equal(HttpStatusCode.OK, churnResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, ownershipResponse.StatusCode);
+
+        using var churnJson = JsonDocument.Parse(await churnResponse.Content.ReadAsStringAsync());
+        var churnRoot = churnJson.RootElement;
+        Assert.Equal(5, churnRoot.GetProperty("draw").GetInt32());
+        Assert.True(churnRoot.GetProperty("recordsTotal").GetInt32() >= 2);
+        Assert.True(churnRoot.GetProperty("recordsFiltered").GetInt32() >= 1);
+        var churnData = churnRoot.GetProperty("data");
+        Assert.Equal(JsonValueKind.Array, churnData.ValueKind);
+        var firstRow = churnData.EnumerateArray().First();
+        Assert.True(firstRow.TryGetProperty("fileId", out _));
+        Assert.True(firstRow.TryGetProperty("filePath", out _));
+        Assert.True(firstRow.TryGetProperty("churnScore", out _));
+        Assert.True(firstRow.TryGetProperty("ownershipConcentration", out _));
+        Assert.True(firstRow.TryGetProperty("isOrphaned", out _));
+
+        using var ownershipJson = JsonDocument.Parse(await ownershipResponse.Content.ReadAsStringAsync());
+        var ownershipRoot = ownershipJson.RootElement;
+        Assert.Equal(JsonValueKind.Array, ownershipRoot.ValueKind);
+        Assert.True(ownershipRoot.GetArrayLength() >= 1);
+    }
+
+    [Fact]
+    public async Task HeatmapApis_ReturnTreeAndDirectoryDrilldown()
+    {
+        await SeedDatabaseAsync();
+
+        using var factory = new TestWebApplicationFactory(_dbPath);
+        using var client = factory.CreateClient();
+
+        var treemapResponse = await client.GetAsync($"/api/run/{Uri.EscapeDataString(_runId)}/heatmap/treemap?metric=churnHotspots");
+        var directoriesResponse = await client.GetAsync($"/api/run/{Uri.EscapeDataString(_runId)}/heatmap/directories?metric=ownershipRisk");
+        var detailsResponse = await client.GetAsync($"/api/run/{Uri.EscapeDataString(_runId)}/heatmap/directory-details?metric=findingDensity&path=src");
+
+        Assert.Equal(HttpStatusCode.OK, treemapResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, directoriesResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, detailsResponse.StatusCode);
+
+        using var treemapJson = JsonDocument.Parse(await treemapResponse.Content.ReadAsStringAsync());
+        var treemapRoot = treemapJson.RootElement;
+        Assert.True(treemapRoot.TryGetProperty("metricValueMax", out _));
+        Assert.True(treemapRoot.TryGetProperty("root", out var treeRoot));
+        Assert.True(treeRoot.TryGetProperty("path", out _));
+        Assert.True(treeRoot.TryGetProperty("children", out _));
+
+        using var detailsJson = JsonDocument.Parse(await detailsResponse.Content.ReadAsStringAsync());
+        var detailsRoot = detailsJson.RootElement;
+        Assert.Equal("src", detailsRoot.GetProperty("directoryPath").GetString());
+        Assert.True(detailsRoot.GetProperty("fileCount").GetInt64() >= 1);
+        Assert.Equal(JsonValueKind.Array, detailsRoot.GetProperty("topFiles").ValueKind);
+        Assert.Equal(JsonValueKind.Array, detailsRoot.GetProperty("topRules").ValueKind);
+    }
+
     private async Task SeedDatabaseAsync()
     {
         var writer = new SqliteResultsWriter(_dbPath);
@@ -270,7 +340,56 @@ public sealed class WebPhase2IntegrationTests : IDisposable
             new("magic-string.candidate", "Magic string candidate", FindingSeverity.Info, "Promote to configuration or typed constant.")
         };
 
-        await writer.WriteAsync(run, files, findings, rules);
+        var gitMetrics = new List<GitFileMetric>
+        {
+            new(
+                FilePath: "src/program.cs",
+                LastCommitAt: DateTimeOffset.UtcNow.AddDays(-12),
+                Commits30d: 2,
+                Commits90d: 5,
+                Commits180d: 6,
+                Commits365d: 9,
+                Authors365d: 3,
+                OwnershipConcentration: 0.58d,
+                LinesAdded365d: 220,
+                LinesRemoved365d: 44,
+                ChurnScore: 4.8d,
+                StaleScore: 12d,
+                TopAuthor: "alice@example.com",
+                TopAuthorPct: 0.54d),
+            new(
+                FilePath: "src/domain/status.cs",
+                LastCommitAt: DateTimeOffset.UtcNow.AddDays(-190),
+                Commits30d: 0,
+                Commits90d: 0,
+                Commits180d: 1,
+                Commits365d: 3,
+                Authors365d: 1,
+                OwnershipConcentration: 0.91d,
+                LinesAdded365d: 40,
+                LinesRemoved365d: 11,
+                ChurnScore: 1.9d,
+                StaleScore: 190d,
+                TopAuthor: "bob@example.com",
+                TopAuthorPct: 0.91d),
+            new(
+                FilePath: "src/payments/gateway.cs",
+                LastCommitAt: DateTimeOffset.UtcNow.AddDays(-6),
+                Commits30d: 4,
+                Commits90d: 6,
+                Commits180d: 7,
+                Commits365d: 11,
+                Authors365d: 4,
+                OwnershipConcentration: 0.47d,
+                LinesAdded365d: 340,
+                LinesRemoved365d: 92,
+                ChurnScore: 6.1d,
+                StaleScore: 6d,
+                TopAuthor: "carol@example.com",
+                TopAuthorPct: 0.42d)
+        };
+
+        await writer.WriteAsync(run, files, findings, rules, gitMetrics);
 
         await using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
         {

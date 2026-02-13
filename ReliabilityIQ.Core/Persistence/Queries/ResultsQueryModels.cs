@@ -147,3 +147,147 @@ public sealed record AstSummary(
 {
     public long TotalCount => AstConfirmedCount + RegexOnlyCount;
 }
+
+public enum GitMetricsSortField
+{
+    FilePath,
+    ChurnScore,
+    StaleScore,
+    Commits90d,
+    Authors365d,
+    OwnershipConcentration,
+    LastCommitAt
+}
+
+public sealed record GitMetricsQueryFilters(
+    double? MinChurnScore = null,
+    double? MaxStaleScore = null,
+    string? PathPrefix = null);
+
+public sealed record GitMetricsQueryRequest(
+    int Offset,
+    int Limit,
+    GitMetricsSortField SortField,
+    bool SortDescending,
+    GitMetricsQueryFilters Filters)
+{
+    public static GitMetricsQueryRequest Default { get; } = new(
+        Offset: 0,
+        Limit: 50,
+        SortField: GitMetricsSortField.ChurnScore,
+        SortDescending: true,
+        Filters: new GitMetricsQueryFilters());
+}
+
+public sealed class GitMetricListItem
+{
+    public long FileId { get; set; }
+
+    public string FilePath { get; set; } = string.Empty;
+
+    public double ChurnScore { get; set; }
+
+    public double? StaleScore { get; set; }
+
+    public long Commits90d { get; set; }
+
+    public long Authors365d { get; set; }
+
+    public double OwnershipConcentration { get; set; }
+
+    public string? TopAuthor { get; set; }
+
+    public double TopAuthorPct { get; set; }
+
+    public string? LastCommitAt { get; set; }
+
+    public long IsOrphaned { get; set; }
+}
+
+public sealed record GitMetricsPage(
+    int TotalCount,
+    int FilteredCount,
+    IReadOnlyList<GitMetricListItem> Items);
+
+public enum HeatmapMetric
+{
+    ChurnHotspots,
+    StaleRisk,
+    OwnershipRisk,
+    PortabilityBlockers,
+    FindingDensity
+}
+
+public sealed record HeatmapFileMetricRow(
+    long FileId,
+    string FilePath,
+    long SizeBytes,
+    double ChurnScore,
+    double StaleScore,
+    double OwnershipRisk,
+    long PortabilityFindingCount,
+    long FindingCount)
+{
+    public double PortabilityBlockers => PortabilityFindingCount;
+
+    public double FindingDensity => FindingCount;
+
+    public double GetMetricValue(HeatmapMetric metric) => metric switch
+    {
+        HeatmapMetric.ChurnHotspots => ChurnScore,
+        HeatmapMetric.StaleRisk => StaleScore,
+        HeatmapMetric.OwnershipRisk => OwnershipRisk,
+        HeatmapMetric.PortabilityBlockers => PortabilityBlockers,
+        HeatmapMetric.FindingDensity => FindingDensity,
+        _ => ChurnScore
+    };
+}
+
+public sealed record DirectoryAggregateItem(
+    string DirectoryPath,
+    int Depth,
+    long FileCount,
+    long TotalSizeBytes,
+    double MetricValue,
+    double ChurnScore,
+    double StaleScore,
+    double OwnershipRisk,
+    double PortabilityBlockers,
+    double FindingDensity);
+
+public sealed class TreemapNode
+{
+    public string Name { get; init; } = string.Empty;
+
+    public string Path { get; init; } = string.Empty;
+
+    public bool IsDirectory { get; init; }
+
+    public long? FileId { get; init; }
+
+    public long SizeBytes { get; set; }
+
+    public long FileCount { get; set; }
+
+    public double MetricValue { get; set; }
+
+    public double ChurnScore { get; set; }
+
+    public double StaleScore { get; set; }
+
+    public double OwnershipRisk { get; set; }
+
+    public double PortabilityBlockers { get; set; }
+
+    public double FindingDensity { get; set; }
+
+    public List<TreemapNode> Children { get; } = [];
+}
+
+public sealed record DirectoryDrilldown(
+    string DirectoryPath,
+    long FileCount,
+    long TotalSizeBytes,
+    double MetricValue,
+    IReadOnlyList<FileSummaryItem> TopFiles,
+    IReadOnlyList<RuleSummaryItem> TopRules);

@@ -31,6 +31,8 @@
                     <li class="nav-item"><a id="findingsNav" class="nav-link" href="#">Findings</a></li>
                     <li class="nav-item"><a id="summaryNav" class="nav-link" href="#">Summary</a></li>
                     <li class="nav-item"><a id="magicStringsNav" class="nav-link" href="#">Magic Strings</a></li>
+                    <li class="nav-item"><a id="heatmapNav" class="nav-link" href="#">Heatmap</a></li>
+                    <li class="nav-item"><a id="churnNav" class="nav-link" href="#">Churn</a></li>
                 </ul>
                 <form class="d-flex align-items-center gap-2" role="search">
                     <label for="runSelector" class="form-label mb-0 small text-body-secondary">Run</label>
@@ -62,6 +64,8 @@
         const findingsNav = document.getElementById("findingsNav");
         const summaryNav = document.getElementById("summaryNav");
         const magicStringsNav = document.getElementById("magicStringsNav");
+        const heatmapNav = document.getElementById("heatmapNav");
+        const churnNav = document.getElementById("churnNav");
         const runsNav = document.getElementById("runsNav");
         const path = window.location.pathname;
 
@@ -70,6 +74,8 @@
             findingsNav.classList.toggle("active", /\/run\/[^/]+\/(findings|file\/\d+)$/i.test(path));
             summaryNav.classList.toggle("active", /\/run\/[^/]+\/summary$/i.test(path));
             magicStringsNav.classList.toggle("active", /\/run\/[^/]+\/magic-strings$/i.test(path));
+            heatmapNav.classList.toggle("active", /\/run\/[^/]+\/heatmap$/i.test(path));
+            churnNav.classList.toggle("active", /\/run\/[^/]+\/churn$/i.test(path));
         }
 
         function getRunIdFromPath() {
@@ -82,6 +88,8 @@
                 findingsNav.setAttribute("href", "#");
                 summaryNav.setAttribute("href", "#");
                 magicStringsNav.setAttribute("href", "#");
+                heatmapNav.setAttribute("href", "#");
+                churnNav.setAttribute("href", "#");
                 return;
             }
 
@@ -89,6 +97,8 @@
             findingsNav.setAttribute("href", `/run/${encoded}/findings`);
             summaryNav.setAttribute("href", `/run/${encoded}/summary`);
             magicStringsNav.setAttribute("href", `/run/${encoded}/magic-strings`);
+            heatmapNav.setAttribute("href", `/run/${encoded}/heatmap`);
+            churnNav.setAttribute("href", `/run/${encoded}/churn`);
         }
 
         function routeToCurrentPageWithRun(runId) {
@@ -110,6 +120,16 @@
 
             if (/\/run\/[^/]+\/magic-strings$/i.test(path)) {
                 window.location.href = `/run/${encoded}/magic-strings`;
+                return;
+            }
+
+            if (/\/run\/[^/]+\/heatmap$/i.test(path)) {
+                window.location.href = `/run/${encoded}/heatmap`;
+                return;
+            }
+
+            if (/\/run\/[^/]+\/churn$/i.test(path)) {
+                window.location.href = `/run/${encoded}/churn`;
                 return;
             }
 

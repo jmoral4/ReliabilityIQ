@@ -242,6 +242,134 @@ app.MapGet("/api/run/{runId}/magic-strings/filters", async (
         totalCandidates = projected.Count
     });
 });
+
+app.MapGet("/api/run/{runId}/churn", async (
+    string runId,
+    HttpRequest request,
+    SqliteResultsQueries queries,
+    CancellationToken cancellationToken) =>
+{
+    var draw = ParseInt(request.Query["draw"], 1);
+    var start = ParseInt(request.Query["start"], 0);
+    var length = ParseInt(request.Query["length"], 25);
+
+    var sortColumnIndex = ParseInt(request.Query["order[0][column]"], 1);
+    var sortDirectionRaw = request.Query["order[0][dir]"].ToString();
+    var sortDirection = string.Equals(sortDirectionRaw, "desc", StringComparison.OrdinalIgnoreCase);
+    var sortFieldRaw = request.Query[$"columns[{sortColumnIndex}][name]"].ToString();
+
+    var minChurn = ParseNullableDouble(request.Query["minChurnScore"]);
+    var maxStale = ParseNullableDouble(request.Query["maxStaleScore"]);
+    var pathPrefix = NullIfEmpty(request.Query["pathPrefix"].ToString());
+
+    var requestModel = new GitMetricsQueryRequest(
+        Offset: start,
+        Limit: length,
+        SortField: ParseGitMetricsSortField(sortFieldRaw),
+        SortDescending: sortDirection,
+        Filters: new GitMetricsQueryFilters(minChurn, maxStale, pathPrefix));
+
+    var page = await queries.GetGitMetrics(runId, requestModel, cancellationToken).ConfigureAwait(false);
+
+    return Results.Ok(new
+    {
+        draw,
+        recordsTotal = page.TotalCount,
+        recordsFiltered = page.FilteredCount,
+        data = page.Items.Select(item => new
+        {
+            fileId = item.FileId,
+            filePath = item.FilePath,
+            churnScore = item.ChurnScore,
+            staleScore = item.StaleScore,
+            commits90d = item.Commits90d,
+            authors365d = item.Authors365d,
+            ownershipConcentration = item.OwnershipConcentration,
+            topAuthor = item.TopAuthor,
+            topAuthorPct = item.TopAuthorPct,
+            lastCommitAt = item.LastCommitAt,
+            isOrphaned = item.IsOrphaned > 0
+        })
+    });
+});
+
+app.MapGet("/api/run/{runId}/churn/ownership", async (
+    string runId,
+    SqliteResultsQueries queries,
+    CancellationToken cancellationToken) =>
+{
+    var page = await queries.GetGitMetrics(
+        runId,
+        new GitMetricsQueryRequest(
+            Offset: 0,
+            Limit: 200,
+            SortField: GitMetricsSortField.OwnershipConcentration,
+            SortDescending: true,
+            Filters: new GitMetricsQueryFilters()),
+        cancellationToken).ConfigureAwait(false);
+
+    var ownershipRows = page.Items
+        .Where(item => item.OwnershipConcentration >= 0.7d)
+        .Take(50)
+        .Select(item => new
+        {
+            fileId = item.FileId,
+            filePath = item.FilePath,
+            topAuthor = item.TopAuthor,
+            topAuthorPct = item.TopAuthorPct,
+            authors365d = item.Authors365d,
+            lastCommitAt = item.LastCommitAt,
+            isOrphaned = item.IsOrphaned > 0
+        });
+
+    return Results.Ok(ownershipRows);
+});
+
+app.MapGet("/api/run/{runId}/heatmap/treemap", async (
+    string runId,
+    string? metric,
+    SqliteResultsQueries queries,
+    CancellationToken cancellationToken) =>
+{
+    var selectedMetric = ParseHeatmapMetric(metric);
+    var tree = await queries.GetTreemapData(runId, selectedMetric, cancellationToken).ConfigureAwait(false);
+    var maxMetric = FindMaxMetricValue(tree);
+
+    return Results.Ok(new
+    {
+        metric = selectedMetric.ToString(),
+        metricValueMax = maxMetric,
+        root = tree
+    });
+});
+
+app.MapGet("/api/run/{runId}/heatmap/directories", async (
+    string runId,
+    string? metric,
+    SqliteResultsQueries queries,
+    CancellationToken cancellationToken) =>
+{
+    var selectedMetric = ParseHeatmapMetric(metric);
+    var directories = await queries.GetDirectoryAggregates(runId, selectedMetric, cancellationToken).ConfigureAwait(false);
+    return Results.Ok(directories);
+});
+
+app.MapGet("/api/run/{runId}/heatmap/directory-details", async (
+    string runId,
+    string? metric,
+    string? path,
+    SqliteResultsQueries queries,
+    CancellationToken cancellationToken) =>
+{
+    var selectedMetric = ParseHeatmapMetric(metric);
+    var details = await queries.GetDirectoryDrilldown(runId, path ?? ".", selectedMetric, cancellationToken).ConfigureAwait(false);
+    if (details is null)
+    {
+        return Results.NotFound();
+    }
+
+    return Results.Ok(details);
+});
 app.Run();
 
 static int ParseInt(string? value, int fallback)
@@ -261,6 +389,18 @@ static double ParseDouble(string? value, double fallback)
         : fallback;
 }
 
+static double? ParseNullableDouble(string? value)
+{
+    if (string.IsNullOrWhiteSpace(value))
+    {
+        return null;
+    }
+
+    return double.TryParse(value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var parsed)
+        ? parsed
+        : null;
+}
+
 static FindingsSortField ParseSortField(string? sortField)
 {
     return sortField?.Trim().ToLowerInvariant() switch
@@ -277,6 +417,45 @@ static FindingsSortField ParseSortField(string? sortField)
 static bool ParseBool(string? value)
 {
     return bool.TryParse(value, out var parsed) && parsed;
+}
+
+static GitMetricsSortField ParseGitMetricsSortField(string? sortField)
+{
+    return sortField?.Trim().ToLowerInvariant() switch
+    {
+        "filepath" => GitMetricsSortField.FilePath,
+        "churnscore" => GitMetricsSortField.ChurnScore,
+        "stalescore" => GitMetricsSortField.StaleScore,
+        "commits90d" => GitMetricsSortField.Commits90d,
+        "authors365d" => GitMetricsSortField.Authors365d,
+        "ownershipconcentration" => GitMetricsSortField.OwnershipConcentration,
+        "lastcommitat" => GitMetricsSortField.LastCommitAt,
+        _ => GitMetricsSortField.ChurnScore
+    };
+}
+
+static HeatmapMetric ParseHeatmapMetric(string? metric)
+{
+    return metric?.Trim().ToLowerInvariant() switch
+    {
+        "churnhotspots" => HeatmapMetric.ChurnHotspots,
+        "stalerisk" => HeatmapMetric.StaleRisk,
+        "ownershiprisk" => HeatmapMetric.OwnershipRisk,
+        "portabilityblockers" => HeatmapMetric.PortabilityBlockers,
+        "findingdensity" => HeatmapMetric.FindingDensity,
+        _ => HeatmapMetric.ChurnHotspots
+    };
+}
+
+static double FindMaxMetricValue(TreemapNode root)
+{
+    var max = root.MetricValue;
+    foreach (var child in root.Children)
+    {
+        max = Math.Max(max, FindMaxMetricValue(child));
+    }
+
+    return max;
 }
 
 public partial class Program;

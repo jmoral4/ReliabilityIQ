@@ -4,6 +4,8 @@ namespace ReliabilityIQ.Core.Discovery;
 
 public sealed class FileClassifier
 {
+    private readonly string[] _deploymentPathMarkers;
+
     private static readonly FrozenSet<string> SourceExtensions = new[]
     {
         ".cs", ".cpp", ".cc", ".cxx", ".c", ".h", ".hpp", ".hh", ".hxx", ".py", ".ps1", ".rs", ".java", ".go", ".js",
@@ -20,15 +22,31 @@ public sealed class FileClassifier
         ".md", ".rst", ".txt", ".adoc"
     }.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
 
-    private static readonly string[] DeploymentPathMarkers =
+    public static readonly string[] DefaultDeploymentPathMarkers =
     {
         "/ev2/",
+        "/rollout/",
+        "/service-model/",
+        "/servicemodel/",
+        "/bindings/",
+        "/azure-pipelines",
         "/pipelines/",
+        "/ado/",
+        "/.azuredevops/",
         "/helm/",
         "/k8s/",
         "/manifests/",
         "/deploy/"
     };
+
+    public FileClassifier(IEnumerable<string>? deploymentPathMarkers = null)
+    {
+        _deploymentPathMarkers = (deploymentPathMarkers ?? DefaultDeploymentPathMarkers)
+            .Select(NormalizeMarker)
+            .Where(marker => marker.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
 
     public FileCategory Classify(string relativePath)
     {
@@ -48,7 +66,7 @@ public sealed class FileClassifier
             return FileCategory.IDE;
         }
 
-        if (HasAnyMarker(normalizedPath, DeploymentPathMarkers))
+        if (HasAnyMarker(normalizedPath, _deploymentPathMarkers))
         {
             return FileCategory.DeploymentArtifact;
         }
@@ -94,11 +112,45 @@ public sealed class FileClassifier
 
     private static string Normalize(string relativePath) => relativePath.Replace('\\', '/');
 
+    private static string NormalizeMarker(string marker)
+    {
+        var normalized = marker.Replace('\\', '/').Trim();
+        if (normalized.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        if (!normalized.StartsWith("/", StringComparison.Ordinal))
+        {
+            normalized = "/" + normalized;
+        }
+
+        if (!normalized.EndsWith("/", StringComparison.Ordinal))
+        {
+            normalized += "/";
+        }
+
+        return normalized;
+    }
+
     private static bool HasAnyMarker(string normalizedPath, IEnumerable<string> markers)
     {
         foreach (var marker in markers)
         {
             if (normalizedPath.Contains(marker, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            var trimmedMarker = marker.Trim('/');
+            if (trimmedMarker.Length > 0 &&
+                normalizedPath.StartsWith(trimmedMarker + "/", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            if (trimmedMarker.Length > 0 &&
+                string.Equals(normalizedPath, trimmedMarker, StringComparison.OrdinalIgnoreCase))
             {
                 return true;
             }

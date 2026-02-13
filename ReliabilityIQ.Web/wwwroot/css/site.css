@@ -80,6 +80,23 @@ pre {
     height: 1rem;
 }
 
+.heatmap-surface {
+    min-height: 24rem;
+    width: 100%;
+    overflow: auto;
+    border: 1px solid #dbe2ef;
+    border-radius: 0.5rem;
+    background: #ffffff;
+    padding: 0.5rem;
+}
+
+.heatmap-legend {
+    height: 0.9rem;
+    border-radius: 999px;
+    background: linear-gradient(90deg, #d8ecff 0%, #0f4c81 100%);
+    border: 1px solid #c8d8ea;
+}
+
 @media (max-width: 767px) {
     .timeline-item {
         grid-template-columns: 1fr;

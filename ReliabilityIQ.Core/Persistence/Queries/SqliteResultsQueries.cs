@@ -562,6 +562,445 @@ public sealed class SqliteResultsQueries
         return rows.Select(MapFileSummaryItem).ToList();
     }
 
+    public async Task<GitMetricsPage> GetGitMetrics(
+        string runId,
+        GitMetricsQueryRequest? request = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(runId);
+
+        var effectiveRequest = request ?? GitMetricsQueryRequest.Default;
+        var safeLimit = Math.Clamp(effectiveRequest.Limit, 1, 500);
+        var safeOffset = Math.Max(effectiveRequest.Offset, 0);
+        var filters = effectiveRequest.Filters ?? new GitMetricsQueryFilters();
+
+        var whereClause = "g.run_id = @RunId";
+        var parameters = new DynamicParameters();
+        parameters.Add("RunId", runId);
+
+        if (filters.MinChurnScore.HasValue)
+        {
+            whereClause += " AND g.churn_score >= @MinChurnScore";
+            parameters.Add("MinChurnScore", filters.MinChurnScore.Value);
+        }
+
+        if (filters.MaxStaleScore.HasValue)
+        {
+            whereClause += " AND COALESCE(g.stale_score, 0) <= @MaxStaleScore";
+            parameters.Add("MaxStaleScore", filters.MaxStaleScore.Value);
+        }
+
+        if (!string.IsNullOrWhiteSpace(filters.PathPrefix))
+        {
+            whereClause += " AND g.file_path LIKE @PathPrefix";
+            parameters.Add("PathPrefix", $"{filters.PathPrefix.Trim()}%");
+        }
+
+        var totalSql = "SELECT COUNT(*) FROM git_file_metrics WHERE run_id = @RunId;";
+        var filteredSql = $"SELECT COUNT(*) FROM git_file_metrics g WHERE {whereClause};";
+        var sortColumn = GetGitMetricsSortColumn(effectiveRequest.SortField);
+        var sortDirection = effectiveRequest.SortDescending ? "DESC" : "ASC";
+        var pageSql = $"""
+                       SELECT
+                           g.file_id AS FileId,
+                           g.file_path AS FilePath,
+                           g.churn_score AS ChurnScore,
+                           g.stale_score AS StaleScore,
+                           g.commits_90d AS Commits90d,
+                           g.authors_365d AS Authors365d,
+                           g.ownership_concentration AS OwnershipConcentration,
+                           g.top_author AS TopAuthor,
+                           g.top_author_pct AS TopAuthorPct,
+                           g.last_commit_at AS LastCommitAt,
+                           CASE
+                               WHEN g.ownership_concentration > 0.8 AND g.commits_90d = 0 THEN 1
+                               ELSE 0
+                           END AS IsOrphaned
+                       FROM git_file_metrics g
+                       WHERE {whereClause}
+                       ORDER BY {sortColumn} {sortDirection}, g.file_path ASC
+                       LIMIT @Limit OFFSET @Offset;
+                       """;
+
+        parameters.Add("Limit", safeLimit);
+        parameters.Add("Offset", safeOffset);
+
+        await using var connection = _connectionFactory();
+        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+
+        var totalCount = await connection.ExecuteScalarAsync<int>(
+            new CommandDefinition(totalSql, new { RunId = runId }, cancellationToken: cancellationToken)).ConfigureAwait(false);
+        var filteredCount = await connection.ExecuteScalarAsync<int>(
+            new CommandDefinition(filteredSql, parameters, cancellationToken: cancellationToken)).ConfigureAwait(false);
+        var items = await connection.QueryAsync<GitMetricListItem>(
+            new CommandDefinition(pageSql, parameters, cancellationToken: cancellationToken)).ConfigureAwait(false);
+
+        return new GitMetricsPage(totalCount, filteredCount, items.ToList());
+    }
+
+    public async Task<IReadOnlyList<DirectoryAggregateItem>> GetDirectoryAggregates(
+        string runId,
+        HeatmapMetric metric,
+        CancellationToken cancellationToken = default)
+    {
+        var rows = await GetHeatmapFileMetrics(runId, cancellationToken).ConfigureAwait(false);
+        var root = BuildTree(rows, metric);
+        var aggregates = new List<DirectoryAggregateItem>();
+        FlattenDirectories(root, metric, depth: 0, aggregates);
+        return aggregates;
+    }
+
+    public async Task<TreemapNode> GetTreemapData(
+        string runId,
+        HeatmapMetric metric,
+        CancellationToken cancellationToken = default)
+    {
+        var rows = await GetHeatmapFileMetrics(runId, cancellationToken).ConfigureAwait(false);
+        return BuildTree(rows, metric);
+    }
+
+    public async Task<DirectoryDrilldown?> GetDirectoryDrilldown(
+        string runId,
+        string directoryPath,
+        HeatmapMetric metric,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(runId);
+        var normalizedPath = NormalizeDirectoryPath(directoryPath);
+
+        var rows = await GetHeatmapFileMetrics(runId, cancellationToken).ConfigureAwait(false);
+        var inDirectory = rows
+            .Where(row => IsPathInDirectory(row.FilePath, normalizedPath))
+            .ToList();
+
+        if (inDirectory.Count == 0)
+        {
+            return null;
+        }
+
+        var totalSize = inDirectory.Sum(row => row.SizeBytes);
+        var fileCount = inDirectory.Count;
+        var metricValue = fileCount == 0 ? 0d : inDirectory.Average(row => row.GetMetricValue(metric));
+
+        var prefix = normalizedPath == "." ? string.Empty : normalizedPath.TrimEnd('/') + "/";
+        var likeValue = string.IsNullOrEmpty(prefix) ? "%" : $"{prefix}%";
+
+        const string topFilesSql = """
+                                   SELECT
+                                       f.file_id AS FileId,
+                                       f.file_path AS FilePath,
+                                       fl.category AS Category,
+                                       fl.language AS Language,
+                                       COUNT(*) AS FindingCount,
+                                       COALESCE(SUM(CASE WHEN f.severity = 'Error' THEN 1 ELSE 0 END), 0) AS ErrorCount,
+                                       COALESCE(SUM(CASE WHEN f.severity = 'Warning' THEN 1 ELSE 0 END), 0) AS WarningCount,
+                                       COALESCE(SUM(CASE WHEN f.severity = 'Info' THEN 1 ELSE 0 END), 0) AS InfoCount
+                                   FROM findings f
+                                   INNER JOIN files fl ON fl.file_id = f.file_id
+                                   WHERE f.run_id = @RunId
+                                     AND f.file_path LIKE @PathPrefix
+                                   GROUP BY f.file_id, f.file_path, fl.category, fl.language
+                                   ORDER BY FindingCount DESC, f.file_path ASC
+                                   LIMIT 10;
+                                   """;
+
+        const string topRulesSql = """
+                                   SELECT
+                                       f.rule_id AS RuleId,
+                                       COALESCE(r.title, f.rule_id) AS Title,
+                                       r.description AS Description,
+                                       COUNT(*) AS FindingCount,
+                                       COALESCE(SUM(CASE WHEN f.severity = 'Error' THEN 1 ELSE 0 END), 0) AS ErrorCount,
+                                       COALESCE(SUM(CASE WHEN f.severity = 'Warning' THEN 1 ELSE 0 END), 0) AS WarningCount,
+                                       COALESCE(SUM(CASE WHEN f.severity = 'Info' THEN 1 ELSE 0 END), 0) AS InfoCount
+                                   FROM findings f
+                                   LEFT JOIN rules r ON r.rule_id = f.rule_id
+                                   WHERE f.run_id = @RunId
+                                     AND f.file_path LIKE @PathPrefix
+                                   GROUP BY f.rule_id, r.title, r.description
+                                   ORDER BY FindingCount DESC, f.rule_id ASC
+                                   LIMIT 10;
+                                   """;
+
+        await using var connection = _connectionFactory();
+        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+
+        var topFiles = await connection.QueryAsync<FileSummaryRow>(
+            new CommandDefinition(topFilesSql, new { RunId = runId, PathPrefix = likeValue }, cancellationToken: cancellationToken)).ConfigureAwait(false);
+        var topRules = await connection.QueryAsync<RuleSummaryRow>(
+            new CommandDefinition(topRulesSql, new { RunId = runId, PathPrefix = likeValue }, cancellationToken: cancellationToken)).ConfigureAwait(false);
+
+        return new DirectoryDrilldown(
+            normalizedPath,
+            fileCount,
+            totalSize,
+            metricValue,
+            topFiles.Select(MapFileSummaryItem).ToList(),
+            topRules.Select(MapRuleSummaryItem).ToList());
+    }
+
+    private async Task<IReadOnlyList<HeatmapFileMetricRow>> GetHeatmapFileMetrics(
+        string runId,
+        CancellationToken cancellationToken)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(runId);
+
+        const string sql = """
+                           SELECT
+                               fl.file_id AS FileId,
+                               fl.path AS FilePath,
+                               fl.size_bytes AS SizeBytes,
+                               COALESCE(g.churn_score, 0) AS ChurnScore,
+                               COALESCE(g.stale_score, 0) AS StaleScore,
+                               COALESCE(g.ownership_concentration, 0) AS OwnershipRisk,
+                               COALESCE(pf.PortabilityFindingCount, 0) AS PortabilityFindingCount,
+                               COALESCE(tf.FindingCount, 0) AS FindingCount
+                           FROM files fl
+                           LEFT JOIN git_file_metrics g
+                               ON g.run_id = fl.run_id
+                              AND g.file_id = fl.file_id
+                           LEFT JOIN (
+                               SELECT f.file_id, COUNT(*) AS PortabilityFindingCount
+                               FROM findings f
+                               WHERE f.run_id = @RunId
+                                 AND f.rule_id LIKE 'portability.%'
+                               GROUP BY f.file_id
+                           ) pf ON pf.file_id = fl.file_id
+                           LEFT JOIN (
+                               SELECT f.file_id, COUNT(*) AS FindingCount
+                               FROM findings f
+                               WHERE f.run_id = @RunId
+                               GROUP BY f.file_id
+                           ) tf ON tf.file_id = fl.file_id
+                           WHERE fl.run_id = @RunId;
+                           """;
+
+        await using var connection = _connectionFactory();
+        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+        var rows = await connection.QueryAsync<HeatmapFileMetricRow>(
+            new CommandDefinition(sql, new { RunId = runId }, cancellationToken: cancellationToken)).ConfigureAwait(false);
+        return rows.ToList();
+    }
+
+    private static TreemapNode BuildTree(IReadOnlyList<HeatmapFileMetricRow> rows, HeatmapMetric metric)
+    {
+        var root = new TreemapNode
+        {
+            Name = ".",
+            Path = ".",
+            IsDirectory = true
+        };
+
+        var directories = new Dictionary<string, TreemapNode>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["."] = root
+        };
+
+        foreach (var row in rows)
+        {
+            var normalized = row.FilePath.Replace('\\', '/');
+            var parts = normalized.Split('/', StringSplitOptions.RemoveEmptyEntries);
+            var currentPath = ".";
+            var parent = root;
+
+            for (var i = 0; i < parts.Length - 1; i++)
+            {
+                var segment = parts[i];
+                currentPath = currentPath == "."
+                    ? segment
+                    : $"{currentPath}/{segment}";
+
+                if (!directories.TryGetValue(currentPath, out var directoryNode))
+                {
+                    directoryNode = new TreemapNode
+                    {
+                        Name = segment,
+                        Path = currentPath,
+                        IsDirectory = true
+                    };
+                    directories[currentPath] = directoryNode;
+                    parent.Children.Add(directoryNode);
+                }
+
+                parent = directoryNode;
+            }
+
+            var fileName = parts.Length == 0 ? normalized : parts[^1];
+            var fileNode = new TreemapNode
+            {
+                Name = fileName,
+                Path = normalized,
+                IsDirectory = false,
+                FileId = row.FileId,
+                SizeBytes = row.SizeBytes,
+                FileCount = 1,
+                ChurnScore = row.ChurnScore,
+                StaleScore = row.StaleScore,
+                OwnershipRisk = row.OwnershipRisk,
+                PortabilityBlockers = row.PortabilityBlockers,
+                FindingDensity = row.FindingDensity,
+                MetricValue = row.GetMetricValue(metric)
+            };
+            parent.Children.Add(fileNode);
+        }
+
+        ComputeDirectoryMetrics(root, metric);
+        SortTree(root);
+        return root;
+    }
+
+    private static void ComputeDirectoryMetrics(TreemapNode node, HeatmapMetric metric)
+    {
+        if (!node.IsDirectory)
+        {
+            return;
+        }
+
+        foreach (var child in node.Children)
+        {
+            ComputeDirectoryMetrics(child, metric);
+        }
+
+        var totalSize = 0L;
+        var totalFiles = 0L;
+        var churnWeighted = 0d;
+        var staleWeighted = 0d;
+        var ownershipWeighted = 0d;
+        var portabilityWeighted = 0d;
+        var densityWeighted = 0d;
+        var weightTotal = 0d;
+
+        foreach (var child in node.Children)
+        {
+            var childWeight = child.IsDirectory ? Math.Max(child.SizeBytes, child.FileCount) : Math.Max(child.SizeBytes, 1);
+            totalSize += child.SizeBytes;
+            totalFiles += child.FileCount;
+            churnWeighted += child.ChurnScore * childWeight;
+            staleWeighted += child.StaleScore * childWeight;
+            ownershipWeighted += child.OwnershipRisk * childWeight;
+            portabilityWeighted += child.PortabilityBlockers * childWeight;
+            densityWeighted += child.FindingDensity * childWeight;
+            weightTotal += childWeight;
+        }
+
+        node.SizeBytes = totalSize;
+        node.FileCount = totalFiles;
+        if (weightTotal <= 0d)
+        {
+            node.ChurnScore = 0d;
+            node.StaleScore = 0d;
+            node.OwnershipRisk = 0d;
+            node.PortabilityBlockers = 0d;
+            node.FindingDensity = 0d;
+            node.MetricValue = 0d;
+            return;
+        }
+
+        node.ChurnScore = churnWeighted / weightTotal;
+        node.StaleScore = staleWeighted / weightTotal;
+        node.OwnershipRisk = ownershipWeighted / weightTotal;
+        node.PortabilityBlockers = portabilityWeighted / weightTotal;
+        node.FindingDensity = densityWeighted / weightTotal;
+        node.MetricValue = metric switch
+        {
+            HeatmapMetric.ChurnHotspots => node.ChurnScore,
+            HeatmapMetric.StaleRisk => node.StaleScore,
+            HeatmapMetric.OwnershipRisk => node.OwnershipRisk,
+            HeatmapMetric.PortabilityBlockers => node.PortabilityBlockers,
+            HeatmapMetric.FindingDensity => node.FindingDensity,
+            _ => node.ChurnScore
+        };
+    }
+
+    private static void FlattenDirectories(
+        TreemapNode node,
+        HeatmapMetric metric,
+        int depth,
+        List<DirectoryAggregateItem> output)
+    {
+        if (!node.IsDirectory)
+        {
+            return;
+        }
+
+        output.Add(new DirectoryAggregateItem(
+            node.Path,
+            depth,
+            node.FileCount,
+            node.SizeBytes,
+            metric switch
+            {
+                HeatmapMetric.ChurnHotspots => node.ChurnScore,
+                HeatmapMetric.StaleRisk => node.StaleScore,
+                HeatmapMetric.OwnershipRisk => node.OwnershipRisk,
+                HeatmapMetric.PortabilityBlockers => node.PortabilityBlockers,
+                HeatmapMetric.FindingDensity => node.FindingDensity,
+                _ => node.ChurnScore
+            },
+            node.ChurnScore,
+            node.StaleScore,
+            node.OwnershipRisk,
+            node.PortabilityBlockers,
+            node.FindingDensity));
+
+        foreach (var child in node.Children.Where(c => c.IsDirectory))
+        {
+            FlattenDirectories(child, metric, depth + 1, output);
+        }
+    }
+
+    private static void SortTree(TreemapNode node)
+    {
+        if (node.Children.Count == 0)
+        {
+            return;
+        }
+
+        node.Children.Sort((left, right) =>
+        {
+            if (left.IsDirectory != right.IsDirectory)
+            {
+                return left.IsDirectory ? -1 : 1;
+            }
+
+            var bySize = right.SizeBytes.CompareTo(left.SizeBytes);
+            if (bySize != 0)
+            {
+                return bySize;
+            }
+
+            return string.Compare(left.Name, right.Name, StringComparison.OrdinalIgnoreCase);
+        });
+
+        foreach (var child in node.Children)
+        {
+            SortTree(child);
+        }
+    }
+
+    private static bool IsPathInDirectory(string filePath, string directoryPath)
+    {
+        var normalizedFile = filePath.Replace('\\', '/');
+        if (directoryPath == ".")
+        {
+            return true;
+        }
+
+        return normalizedFile.StartsWith(directoryPath.TrimEnd('/') + "/", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(normalizedFile, directoryPath, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string NormalizeDirectoryPath(string? directoryPath)
+    {
+        if (string.IsNullOrWhiteSpace(directoryPath) || directoryPath == ".")
+        {
+            return ".";
+        }
+
+        var normalized = directoryPath.Replace('\\', '/').Trim('/');
+        return string.IsNullOrWhiteSpace(normalized) ? "." : normalized;
+    }
+
     private static string GetSortColumn(FindingsSortField sortField) => sortField switch
     {
         FindingsSortField.Severity => "CASE f.severity WHEN 'Error' THEN 0 WHEN 'Warning' THEN 1 ELSE 2 END",
@@ -570,6 +1009,18 @@ public sealed class SqliteResultsQueries
         FindingsSortField.Line => "f.line",
         FindingsSortField.Confidence => "CASE f.confidence WHEN 'High' THEN 0 WHEN 'Medium' THEN 1 ELSE 2 END",
         _ => "CASE f.severity WHEN 'Error' THEN 0 WHEN 'Warning' THEN 1 ELSE 2 END"
+    };
+
+    private static string GetGitMetricsSortColumn(GitMetricsSortField sortField) => sortField switch
+    {
+        GitMetricsSortField.FilePath => "g.file_path",
+        GitMetricsSortField.ChurnScore => "g.churn_score",
+        GitMetricsSortField.StaleScore => "COALESCE(g.stale_score, 0)",
+        GitMetricsSortField.Commits90d => "g.commits_90d",
+        GitMetricsSortField.Authors365d => "g.authors_365d",
+        GitMetricsSortField.OwnershipConcentration => "g.ownership_concentration",
+        GitMetricsSortField.LastCommitAt => "COALESCE(g.last_commit_at, '')",
+        _ => "g.churn_score"
     };
 
     private static RunListItem MapRunListItem(RunRow row) => new(

@@ -1,0 +1,346 @@
+@page "/run/{runId}/heatmap"
+@model ReliabilityIQ.Web.Pages.Run.HeatmapModel
+@{
+    ViewData["Title"] = "Heatmap";
+}
+
+@if (Model.Run is null)
+{
+    <div class="alert alert-warning" role="alert">Run not found.</div>
+}
+else
+{
+    <section class="mb-3">
+        <h1 class="h3 mb-1">Heatmap</h1>
+        <div class="small text-body-secondary">
+            <span class="font-monospace">@Model.Run.RunId</span>
+            <span class="mx-2">|</span>
+            <span class="font-monospace">@Model.Run.RepoRoot</span>
+        </div>
+    </section>
+
+    <div class="card mb-3">
+        <div class="card-body d-flex flex-column flex-lg-row gap-3 align-items-start align-items-lg-center">
+            <div>
+                <label for="metricSelector" class="form-label mb-1">Metric</label>
+                <select id="metricSelector" class="form-select form-select-sm">
+                    <option value="churnHotspots" selected>Churn Hotspots</option>
+                    <option value="staleRisk">Stale Risk</option>
+                    <option value="ownershipRisk">Ownership Risk</option>
+                    <option value="portabilityBlockers">Portability Blockers</option>
+                    <option value="findingDensity">Finding Density</option>
+                </select>
+            </div>
+            <div class="flex-fill">
+                <div class="small text-body-secondary mb-1">Color Legend</div>
+                <div id="legendGradient" class="heatmap-legend"></div>
+                <div class="d-flex justify-content-between small text-body-secondary"><span id="legendMin">0</span><span id="legendMax">0</span></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="row g-3">
+        <div class="col-12 col-xl-6">
+            <div class="card h-100">
+                <div class="card-body">
+                    <h2 class="h6 text-uppercase text-body-secondary">Directory Tree</h2>
+                    <div id="treeContainer" class="heatmap-surface"></div>
+                </div>
+            </div>
+        </div>
+        <div class="col-12 col-xl-6">
+            <div class="card h-100">
+                <div class="card-body">
+                    <h2 class="h6 text-uppercase text-body-secondary">Treemap</h2>
+                    <div id="treemapContainer" class="heatmap-surface"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="card mt-3">
+        <div class="card-body">
+            <h2 class="h6 text-uppercase text-body-secondary mb-3">Directory Drilldown</h2>
+            <div id="drilldownMeta" class="small text-body-secondary mb-2">Select a directory from the tree or treemap.</div>
+            <div class="row g-3">
+                <div class="col-12 col-lg-6">
+                    <h3 class="h6">Top Files</h3>
+                    <div class="table-responsive">
+                        <table class="table table-sm table-striped align-middle mb-0">
+                            <thead><tr><th>File</th><th>Findings</th></tr></thead>
+                            <tbody id="drilldownFiles"></tbody>
+                        </table>
+                    </div>
+                </div>
+                <div class="col-12 col-lg-6">
+                    <h3 class="h6">Top Findings</h3>
+                    <div class="table-responsive">
+                        <table class="table table-sm table-striped align-middle mb-0">
+                            <thead><tr><th>Rule</th><th>Count</th></tr></thead>
+                            <tbody id="drilldownRules"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+@section Scripts
+{
+    <script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
+    <script>
+        function escapeHtml(value) {
+            if (!value) return "";
+            return String(value)
+                .replaceAll("&", "&amp;")
+                .replaceAll("<", "&lt;")
+                .replaceAll(">", "&gt;")
+                .replaceAll('"', "&quot;")
+                .replaceAll("'", "&#39;");
+        }
+
+        function colorScale(maxValue) {
+            const domainMax = Math.max(1, Number(maxValue || 0));
+            return d3.scaleLinear()
+                .domain([0, domainMax])
+                .range(["#d8ecff", "#0f4c81"]);
+        }
+
+        function renderLegend(maxValue) {
+            document.getElementById("legendMin").textContent = "0";
+            document.getElementById("legendMax").textContent = Number(maxValue || 0).toFixed(2);
+        }
+
+        async function loadTreemapData(runId, metric) {
+            const response = await fetch(`/api/run/${encodeURIComponent(runId)}/heatmap/treemap?metric=${encodeURIComponent(metric)}`, { headers: { "Accept": "application/json" } });
+            if (!response.ok) {
+                return null;
+            }
+
+            return await response.json();
+        }
+
+        async function loadDirectoryDrilldown(runId, metric, path) {
+            const response = await fetch(`/api/run/${encodeURIComponent(runId)}/heatmap/directory-details?metric=${encodeURIComponent(metric)}&path=${encodeURIComponent(path || ".")}`, { headers: { "Accept": "application/json" } });
+            const filesBody = document.getElementById("drilldownFiles");
+            const rulesBody = document.getElementById("drilldownRules");
+            const meta = document.getElementById("drilldownMeta");
+
+            if (!response.ok) {
+                meta.textContent = "Directory details unavailable.";
+                filesBody.innerHTML = "";
+                rulesBody.innerHTML = "";
+                return;
+            }
+
+            const payload = await response.json();
+            meta.textContent = `Path: ${payload.directoryPath} | Files: ${payload.fileCount} | Metric: ${Number(payload.metricValue || 0).toFixed(3)}`;
+
+            const runIdEncoded = encodeURIComponent(runId);
+            filesBody.innerHTML = (payload.topFiles || []).map(file => {
+                const fileId = encodeURIComponent(file.fileId);
+                return `<tr><td class="font-monospace small"><a class="link-dark" href="/run/${runIdEncoded}/file/${fileId}">${escapeHtml(file.filePath)}</a></td><td>${Number(file.findingCount || 0)}</td></tr>`;
+            }).join("") || '<tr><td colspan="2" class="text-body-secondary">No findings in this directory.</td></tr>';
+
+            rulesBody.innerHTML = (payload.topRules || []).map(rule => {
+                return `<tr><td class="font-monospace small">${escapeHtml(rule.ruleId)}</td><td>${Number(rule.findingCount || 0)}</td></tr>`;
+            }).join("") || '<tr><td colspan="2" class="text-body-secondary">No findings in this directory.</td></tr>';
+        }
+
+        function renderTree(container, data, colorByMetric, onDirectoryClick, onFileClick) {
+            container.innerHTML = "";
+            const width = Math.max(320, container.clientWidth || 320);
+            const treeLayout = d3.tree().nodeSize([22, 180]);
+            const root = d3.hierarchy(data);
+            const sizeScale = d3.scaleSqrt().domain([1, Math.max(1, Number(data.fileCount || 1))]).range([3.5, 9]);
+
+            root.descendants().forEach((node, index) => {
+                node.id = index;
+                if (node.depth > 1 && node.children) {
+                    node._children = node.children;
+                    node.children = null;
+                }
+            });
+
+            const svg = d3.select(container)
+                .append("svg")
+                .attr("width", width);
+
+            const linkLayer = svg.append("g")
+                .attr("fill", "none")
+                .attr("stroke", "#adb5bd")
+                .attr("stroke-opacity", 0.7)
+                .attr("stroke-width", 1.2);
+
+            const nodeLayer = svg.append("g");
+
+            function update(source) {
+                treeLayout(root);
+                const nodes = root.descendants();
+                const links = root.links();
+                const minX = d3.min(nodes, d => d.x) || 0;
+                const maxX = d3.max(nodes, d => d.x) || 0;
+                const height = Math.max(320, maxX - minX + 80);
+                svg.attr("height", height).attr("viewBox", [0, minX - 40, width, height]);
+
+                linkLayer
+                    .selectAll("path")
+                    .data(links, d => d.target.id)
+                    .join("path")
+                    .attr("d", d3.linkHorizontal().x(d => d.y + 20).y(d => d.x));
+
+                const nodeSelection = nodeLayer
+                    .selectAll("g")
+                    .data(nodes, d => d.id)
+                    .join(enter => {
+                        const group = enter.append("g")
+                            .attr("transform", d => `translate(${source.y + 20},${source.x})`)
+                            .style("cursor", "pointer");
+
+                        group.append("circle")
+                            .attr("r", 1e-6);
+
+                        group.append("text")
+                            .attr("dy", "0.31em")
+                            .attr("class", "small")
+                            .attr("opacity", 0);
+
+                        return group;
+                    });
+
+                nodeSelection
+                    .transition()
+                    .duration(150)
+                    .attr("transform", d => `translate(${d.y + 20},${d.x})`);
+
+                nodeSelection.select("circle")
+                    .transition()
+                    .duration(150)
+                    .attr("r", d => d.data.isDirectory ? sizeScale(Math.max(1, Number(d.data.fileCount || 1))) : 3.5)
+                    .attr("fill", d => colorByMetric(Number(d.data.metricValue || 0)))
+                    .attr("stroke", d => d.data.isDirectory ? "#0b5ed7" : "#6c757d");
+
+                nodeSelection.select("text")
+                    .attr("x", d => d.children ? -8 : 8)
+                    .attr("text-anchor", d => d.children ? "end" : "start")
+                    .attr("opacity", 1)
+                    .text(d => d.data.name);
+
+                nodeSelection.on("click", (_, d) => {
+                    if (d.data.isDirectory) {
+                        if (d.children) {
+                            d._children = d.children;
+                            d.children = null;
+                        } else {
+                            d.children = d._children;
+                            d._children = null;
+                        }
+
+                        onDirectoryClick(d.data.path || ".");
+                        update(d);
+                        return;
+                    }
+
+                    if (d.data.fileId) {
+                        onFileClick(d.data.fileId);
+                    }
+                });
+            }
+
+            root.x = 0;
+            root.y = 0;
+            update(root);
+        }
+
+        function renderTreemap(container, data, colorByMetric, onDirectoryClick, onFileClick) {
+            container.innerHTML = "";
+            const width = Math.max(320, container.clientWidth || 320);
+            const height = Math.max(380, Math.round(width * 0.65));
+
+            const hierarchy = d3.hierarchy(data)
+                .sum(d => Number(d.sizeBytes || 0) > 0 ? Number(d.sizeBytes || 0) : 1)
+                .sort((a, b) => (b.value || 0) - (a.value || 0));
+
+            d3.treemap().size([width, height]).paddingInner(1)(hierarchy);
+
+            const svg = d3.select(container)
+                .append("svg")
+                .attr("width", width)
+                .attr("height", height)
+                .attr("viewBox", [0, 0, width, height]);
+
+            const leaf = svg.selectAll("g")
+                .data(hierarchy.leaves())
+                .join("g")
+                .attr("transform", d => `translate(${d.x0},${d.y0})`)
+                .style("cursor", "pointer")
+                .on("click", (_, d) => {
+                    if (d.data.isDirectory) {
+                        onDirectoryClick(d.data.path || ".");
+                    } else if (d.data.fileId) {
+                        onFileClick(d.data.fileId);
+                    } else {
+                        onDirectoryClick(d.parent?.data?.path || ".");
+                    }
+                });
+
+            leaf.append("rect")
+                .attr("width", d => Math.max(0, d.x1 - d.x0))
+                .attr("height", d => Math.max(0, d.y1 - d.y0))
+                .attr("fill", d => colorByMetric(Number(d.data.metricValue || 0)))
+                .attr("stroke", "#ffffff");
+
+            leaf.append("title")
+                .text(d => `${d.data.path}\nMetric: ${Number(d.data.metricValue || 0).toFixed(3)}\nFindings: ${Number(d.data.findingDensity || 0).toFixed(1)}`);
+
+            leaf.append("text")
+                .attr("x", 4)
+                .attr("y", 14)
+                .attr("class", "small")
+                .attr("fill", "#0a0f14")
+                .text(d => d.data.name)
+                .each(function (d) {
+                    const widthLimit = Math.max(0, d.x1 - d.x0 - 6);
+                    if (this.getComputedTextLength() > widthLimit) {
+                        d3.select(this).text("");
+                    }
+                });
+        }
+
+        (async function () {
+            const runId = "@Model.RunId";
+            const metricSelector = document.getElementById("metricSelector");
+            const treeContainer = document.getElementById("treeContainer");
+            const treemapContainer = document.getElementById("treemapContainer");
+
+            async function render() {
+                const metric = metricSelector.value;
+                const data = await loadTreemapData(runId, metric);
+                if (!data) {
+                    treeContainer.innerHTML = '<p class="text-body-secondary">Unable to load heatmap data.</p>';
+                    treemapContainer.innerHTML = '<p class="text-body-secondary">Unable to load treemap data.</p>';
+                    return;
+                }
+
+                const maxMetric = Number(data.metricValueMax || 0);
+                const scale = colorScale(maxMetric);
+                renderLegend(maxMetric);
+
+                const root = data.root;
+                const fileNavigate = fileId => {
+                    const runEncoded = encodeURIComponent(runId);
+                    const fileEncoded = encodeURIComponent(fileId);
+                    window.location.href = `/run/${runEncoded}/file/${fileEncoded}`;
+                };
+
+                renderTree(treeContainer, root, scale, path => loadDirectoryDrilldown(runId, metric, path), fileNavigate);
+                renderTreemap(treemapContainer, root, scale, path => loadDirectoryDrilldown(runId, metric, path), fileNavigate);
+                await loadDirectoryDrilldown(runId, metric, ".");
+            }
+
+            metricSelector.addEventListener("change", render);
+            await render();
+        })();
+    </script>
+}
