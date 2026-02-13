@@ -36,11 +36,13 @@ public sealed class WebPhase2IntegrationTests : IDisposable
         var home = await client.GetAsync("/");
         var findings = await client.GetAsync($"/run/{Uri.EscapeDataString(_runId)}/findings");
         var summary = await client.GetAsync($"/run/{Uri.EscapeDataString(_runId)}/summary");
+        var magicStrings = await client.GetAsync($"/run/{Uri.EscapeDataString(_runId)}/magic-strings");
         var fileDetail = await client.GetAsync($"/run/{Uri.EscapeDataString(_runId)}/file/{_fileId}");
 
         Assert.Equal(HttpStatusCode.OK, home.StatusCode);
         Assert.Equal(HttpStatusCode.OK, findings.StatusCode);
         Assert.Equal(HttpStatusCode.OK, summary.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, magicStrings.StatusCode);
         Assert.Equal(HttpStatusCode.OK, fileDetail.StatusCode);
     }
 
@@ -118,6 +120,69 @@ public sealed class WebPhase2IntegrationTests : IDisposable
         Assert.Equal(1, shownCount);
     }
 
+    [Fact]
+    public async Task MagicStringsApis_ReturnRankedCandidates_WithFiltersAndModules()
+    {
+        await SeedDatabaseAsync();
+
+        using var factory = new TestWebApplicationFactory(_dbPath);
+        using var client = factory.CreateClient();
+
+        var rankedResponse = await client.GetAsync(
+            $"/api/run/{Uri.EscapeDataString(_runId)}/magic-strings?draw=3&minScore=3.0&minOccurrences=3&language=csharp&pathPrefix=src/domain/&scope=overall&topN=25");
+        var moduleResponse = await client.GetAsync(
+            $"/api/run/{Uri.EscapeDataString(_runId)}/magic-strings/modules?minScore=0.0&minOccurrences=2&topN=10");
+
+        Assert.Equal(HttpStatusCode.OK, rankedResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, moduleResponse.StatusCode);
+
+        using var rankedJson = JsonDocument.Parse(await rankedResponse.Content.ReadAsStringAsync());
+        var rankedRoot = rankedJson.RootElement;
+        Assert.Equal(3, rankedRoot.GetProperty("draw").GetInt32());
+        Assert.True(rankedRoot.GetProperty("recordsTotal").GetInt32() >= 2);
+        Assert.True(rankedRoot.GetProperty("recordsFiltered").GetInt32() >= 1);
+        var rankedData = rankedRoot.GetProperty("data");
+        Assert.True(rankedData.GetArrayLength() >= 1);
+        var firstCandidate = rankedData.EnumerateArray().First();
+        Assert.Equal("magic-string.comparison-used", firstCandidate.GetProperty("ruleId").GetString());
+        Assert.Equal("ACTIVE", firstCandidate.GetProperty("literal").GetString());
+        Assert.True(firstCandidate.GetProperty("magicScore").GetDouble() >= 4.5d);
+        Assert.True(firstCandidate.GetProperty("occurrenceCount").GetInt32() >= 4);
+        Assert.Equal("src/domain/status.cs", firstCandidate.GetProperty("topFilePath").GetString());
+
+        using var moduleJson = JsonDocument.Parse(await moduleResponse.Content.ReadAsStringAsync());
+        var moduleRoot = moduleJson.RootElement;
+        Assert.Equal(JsonValueKind.Array, moduleRoot.ValueKind);
+        Assert.True(moduleRoot.GetArrayLength() >= 1);
+        var firstModule = moduleRoot.EnumerateArray().First();
+        Assert.True(firstModule.TryGetProperty("module", out _));
+        Assert.True(firstModule.TryGetProperty("candidates", out var moduleCandidates));
+        Assert.Equal(JsonValueKind.Array, moduleCandidates.ValueKind);
+    }
+
+    [Fact]
+    public async Task FindingsApi_SupportsRulePrefix_ForMagicStrings()
+    {
+        await SeedDatabaseAsync();
+
+        using var factory = new TestWebApplicationFactory(_dbPath);
+        using var client = factory.CreateClient();
+
+        var uri = $"/api/run/{Uri.EscapeDataString(_runId)}/findings?draw=9&start=0&length=50&order[0][column]=2&order[0][dir]=asc&columns[2][name]=severity&rulePrefix=magic-string.";
+        var response = await client.GetAsync(uri);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var root = json.RootElement;
+        Assert.True(root.GetProperty("recordsFiltered").GetInt32() >= 2);
+        var ruleIds = root.GetProperty("data").EnumerateArray()
+            .Select(row => row.GetProperty("ruleId").GetString())
+            .Where(ruleId => !string.IsNullOrWhiteSpace(ruleId))
+            .ToList();
+        Assert.All(ruleIds, ruleId => Assert.StartsWith("magic-string.", ruleId));
+    }
+
     private async Task SeedDatabaseAsync()
     {
         var writer = new SqliteResultsWriter(_dbPath);
@@ -132,7 +197,9 @@ public sealed class WebPhase2IntegrationTests : IDisposable
 
         var files = new List<PersistedFile>
         {
-            new("src/program.cs", FileCategory.Source, 100, "hash-1", "csharp")
+            new("src/program.cs", FileCategory.Source, 100, "hash-1", "csharp"),
+            new("src/domain/status.cs", FileCategory.Source, 160, "hash-2", "csharp"),
+            new("src/payments/gateway.cs", FileCategory.Source, 140, "hash-3", "csharp")
         };
 
         var findings = new List<Finding>
@@ -164,13 +231,43 @@ public sealed class WebPhase2IntegrationTests : IDisposable
                 Confidence = FindingConfidence.Medium,
                 Fingerprint = "fp-web-2",
                 Metadata = """{"engine":"regex","suppressed":true,"suppressionReason":"fixture"}"""
+            },
+            new()
+            {
+                RunId = _runId,
+                RuleId = "magic-string.comparison-used",
+                FilePath = "src/domain/status.cs",
+                Line = 10,
+                Column = 15,
+                Message = "Magic string candidate 'ACTIVE' score=4.5 occurrences=4.",
+                Snippet = "if (status == \"ACTIVE\")",
+                Severity = FindingSeverity.Info,
+                Confidence = FindingConfidence.High,
+                Fingerprint = "fp-web-3",
+                Metadata = """{"strategy":"exclude-detect-score-threshold","contextSummary":"languages=csharp;contexts=EqualsExpressionSyntax","scoring":{"frequencyScore":2.3219,"usageBoost":2.0,"penalties":0.0,"magicScore":4.5},"topLocations":[{"file":"src/domain/status.cs","line":10,"column":15}],"allOccurrences":[{"file":"src/domain/status.cs","line":10,"column":15,"language":"csharp","astParent":"EqualsExpressionSyntax","callsite":"status ==","comparison":true,"conditional":true,"exception":false,"astConfirmed":true,"testCode":false,"raw":"ACTIVE"},{"file":"src/domain/status.cs","line":22,"column":19,"language":"csharp","astParent":"SwitchSectionSyntax","callsite":"switch","comparison":true,"conditional":false,"exception":false,"astConfirmed":true,"testCode":false,"raw":"ACTIVE"},{"file":"src/domain/status.cs","line":35,"column":21,"language":"csharp","astParent":"AssignmentExpressionSyntax","callsite":"dictionary","comparison":false,"conditional":false,"exception":false,"astConfirmed":true,"testCode":false,"raw":"ACTIVE"},{"file":"src/domain/status.cs","line":47,"column":14,"language":"csharp","astParent":"EqualsExpressionSyntax","callsite":"status ==","comparison":true,"conditional":true,"exception":false,"astConfirmed":true,"testCode":false,"raw":"ACTIVE"}]}"""
+            },
+            new()
+            {
+                RunId = _runId,
+                RuleId = "magic-string.candidate",
+                FilePath = "src/payments/gateway.cs",
+                Line = 18,
+                Column = 20,
+                Message = "Magic string candidate 'pending_review' score=2.2 occurrences=2.",
+                Snippet = "if (state == \"pending_review\")",
+                Severity = FindingSeverity.Info,
+                Confidence = FindingConfidence.Medium,
+                Fingerprint = "fp-web-4",
+                Metadata = """{"strategy":"exclude-detect-score-threshold","contextSummary":"languages=csharp;contexts=EqualsExpressionSyntax","scoring":{"frequencyScore":1.585,"usageBoost":1.5,"penalties":0.08,"magicScore":2.2},"topLocations":[{"file":"src/payments/gateway.cs","line":18,"column":20}],"allOccurrences":[{"file":"src/payments/gateway.cs","line":18,"column":20,"language":"csharp","astParent":"EqualsExpressionSyntax","callsite":"state ==","comparison":true,"conditional":true,"exception":false,"astConfirmed":true,"testCode":false,"raw":"pending_review"},{"file":"src/payments/gateway.cs","line":43,"column":28,"language":"csharp","astParent":"ArgumentSyntax","callsite":"MapState","comparison":false,"conditional":false,"exception":false,"astConfirmed":true,"testCode":false,"raw":"pending_review"}]}"""
             }
         };
 
         var rules = new List<RuleDefinition>
         {
             new("portability.hardcoded.dns", "Hardcoded DNS", FindingSeverity.Warning, "Use configuration for DNS names."),
-            new("portability.hardcoded.endpoint", "Hardcoded Endpoint", FindingSeverity.Warning, "Replace hardcoded endpoint with IConfiguration lookup.")
+            new("portability.hardcoded.endpoint", "Hardcoded Endpoint", FindingSeverity.Warning, "Replace hardcoded endpoint with IConfiguration lookup."),
+            new("magic-string.comparison-used", "Comparison-driven magic string", FindingSeverity.Info, "Extract to enum or constant."),
+            new("magic-string.candidate", "Magic string candidate", FindingSeverity.Info, "Promote to configuration or typed constant.")
         };
 
         await writer.WriteAsync(run, files, findings, rules);
@@ -181,8 +278,8 @@ public sealed class WebPhase2IntegrationTests : IDisposable
         }.ToString());
         await connection.OpenAsync();
         _fileId = await connection.ExecuteScalarAsync<long>(
-            "SELECT file_id FROM files WHERE run_id = @RunId LIMIT 1;",
-            new { RunId = _runId });
+            "SELECT file_id FROM files WHERE run_id = @RunId AND path = @Path LIMIT 1;",
+            new { RunId = _runId, Path = "src/program.cs" });
     }
 
     public void Dispose()

@@ -1,0 +1,18 @@
+# ReliabilityIQ central suppressions
+# Format:
+# - path: <glob>
+#   rule: <rule-id>
+#   fingerprint: <optional>
+#
+# Notes:
+# - `path` and `rule` are required.
+# - `fingerprint` is optional and narrows suppression to a specific finding instance.
+# - Keep this file minimal; prefer fixing code over broad suppressions.
+
+# Example: suppress one noisy DNS rule in test fixtures
+- path: tests/fixtures/**
+  rule: portability.hardcoded.dns
+
+# Example: suppress localhost findings in local dev bootstrap scripts
+- path: scripts/dev/**
+  rule: portability.hardcoded.localhost

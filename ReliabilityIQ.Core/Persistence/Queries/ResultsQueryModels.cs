@@ -31,6 +31,7 @@ public sealed record RunDetails(
 public sealed record FindingsQueryFilters(
     string? Severity = null,
     string? RuleId = null,
+    string? RulePrefix = null,
     string? Confidence = null,
     string? FileCategory = null,
     string? Language = null,

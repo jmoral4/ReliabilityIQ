@@ -24,6 +24,7 @@ public sealed class ReadOnlySqliteConnectionFactory : IReadOnlySqliteConnectionF
             DataSource = DatabasePath,
             Mode = SqliteOpenMode.ReadOnly,
             Cache = SqliteCacheMode.Shared,
+            DefaultTimeout = 30,
             Pooling = true
         }.ToString();
     }

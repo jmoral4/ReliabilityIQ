@@ -1,5 +1,7 @@
 using Dapper;
 using Microsoft.Data.Sqlite;
+using System.Globalization;
+using System.Text;
 
 namespace ReliabilityIQ.Core.Persistence.Queries;
 
@@ -107,6 +109,12 @@ public sealed class SqliteResultsQueries
             parameters.Add("RuleId", filters.RuleId);
         }
 
+        if (!string.IsNullOrWhiteSpace(filters.RulePrefix))
+        {
+            whereClause += " AND f.rule_id LIKE @RulePrefix";
+            parameters.Add("RulePrefix", $"{filters.RulePrefix.Trim()}%");
+        }
+
         if (!string.IsNullOrWhiteSpace(filters.Confidence))
         {
             whereClause += " AND f.confidence = @Confidence";
@@ -212,6 +220,78 @@ public sealed class SqliteResultsQueries
         return new FindingsPage(totalCount, filteredCount, items.ToList());
     }
 
+    public async Task<IReadOnlyList<FindingListItem>> GetFindingsByRulePrefix(
+        string runId,
+        string rulePrefix,
+        bool includeSuppressed = false,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(runId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(rulePrefix);
+
+        var suppressionClause = includeSuppressed
+            ? string.Empty
+            : "AND NOT (COALESCE(f.metadata, '') LIKE '%\"suppressed\":true%' OR COALESCE(f.metadata, '') LIKE '%\"isSuppressed\":true%')";
+
+        var sql = $"""
+                   SELECT
+                       f.finding_id AS FindingId,
+                       f.file_id AS FileId,
+                       f.rule_id AS RuleId,
+                       COALESCE(r.title, f.rule_id) AS RuleTitle,
+                       COALESCE(r.description, '') AS RuleDescription,
+                       f.file_path AS FilePath,
+                       f.line AS Line,
+                       f."column" AS "Column",
+                       f.message AS Message,
+                       f.snippet AS Snippet,
+                       f.severity AS Severity,
+                       f.confidence AS Confidence,
+                       fl.category AS FileCategory,
+                       fl.language AS Language,
+                       f.metadata AS Metadata,
+                       CASE
+                           WHEN COALESCE(f.metadata, '') LIKE '%\"astConfirmed\":true%' THEN 1
+                           ELSE 0
+                       END AS AstConfirmed,
+                       CASE
+                           WHEN COALESCE(f.metadata, '') LIKE '%\"suppressed\":true%' OR COALESCE(f.metadata, '') LIKE '%\"isSuppressed\":true%' THEN 1
+                           ELSE 0
+                       END AS IsSuppressed,
+                       CASE
+                           WHEN COALESCE(f.metadata, '') LIKE '%\"suppressionReason\":\"%' THEN
+                               substr(
+                                   f.metadata,
+                                   instr(f.metadata, '\"suppressionReason\":\"') + length('\"suppressionReason\":\"'),
+                                   instr(substr(f.metadata, instr(f.metadata, '\"suppressionReason\":\"') + length('\"suppressionReason\":\"')), '\"') - 1)
+                           WHEN COALESCE(f.metadata, '') LIKE '%\"reason\":\"%' THEN
+                               substr(
+                                   f.metadata,
+                                   instr(f.metadata, '\"reason\":\"') + length('\"reason\":\"'),
+                                   instr(substr(f.metadata, instr(f.metadata, '\"reason\":\"') + length('\"reason\":\"')), '\"') - 1)
+                           ELSE NULL
+                       END AS SuppressionReason
+                   FROM findings f
+                   INNER JOIN files fl ON fl.file_id = f.file_id
+                   LEFT JOIN rules r ON r.rule_id = f.rule_id
+                   WHERE f.run_id = @RunId
+                     AND f.rule_id LIKE @RulePrefix
+                     {suppressionClause}
+                   ORDER BY f.rule_id ASC, f.finding_id ASC;
+                   """;
+
+        await using var connection = _connectionFactory();
+        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+
+        var rows = await connection.QueryAsync<FindingListItem>(
+            new CommandDefinition(
+                sql,
+                new { RunId = runId, RulePrefix = $"{rulePrefix.Trim()}%" },
+                cancellationToken: cancellationToken)).ConfigureAwait(false);
+
+        return rows.ToList();
+    }
+
     public async Task<IReadOnlyList<FileSummaryItem>> GetFileSummary(string runId, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(runId);
@@ -236,10 +316,10 @@ public sealed class SqliteResultsQueries
         await using var connection = _connectionFactory();
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
 
-        var rows = await connection.QueryAsync<FileSummaryItem>(
+        var rows = await connection.QueryAsync<FileSummaryRow>(
             new CommandDefinition(sql, new { RunId = runId }, cancellationToken: cancellationToken)).ConfigureAwait(false);
 
-        return rows.ToList();
+        return rows.Select(MapFileSummaryItem).ToList();
     }
 
     public async Task<IReadOnlyList<RuleSummaryItem>> GetRuleSummary(string runId, CancellationToken cancellationToken = default)
@@ -476,10 +556,10 @@ public sealed class SqliteResultsQueries
         await using var connection = _connectionFactory();
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
 
-        var rows = await connection.QueryAsync<FileSummaryItem>(
+        var rows = await connection.QueryAsync<FileSummaryRow>(
             new CommandDefinition(sql, new { RunId = runId, Limit = safeLimit }, cancellationToken: cancellationToken)).ConfigureAwait(false);
 
-        return rows.ToList();
+        return rows.Select(MapFileSummaryItem).ToList();
     }
 
     private static string GetSortColumn(FindingsSortField sortField) => sortField switch
@@ -503,6 +583,16 @@ public sealed class SqliteResultsQueries
         ToInt(row.WarningCount),
         ToInt(row.InfoCount));
 
+    private static FileSummaryItem MapFileSummaryItem(FileSummaryRow row) => new(
+        row.FileId,
+        row.FilePath,
+        row.Category,
+        row.Language,
+        ToLong(row.FindingCount),
+        ToLong(row.ErrorCount),
+        ToLong(row.WarningCount),
+        ToLong(row.InfoCount));
+
     private static int ToInt(long value)
     {
         return value switch
@@ -511,6 +601,40 @@ public sealed class SqliteResultsQueries
             < int.MinValue => int.MinValue,
             _ => (int)value
         };
+    }
+
+    private static long ToLong(object? value)
+    {
+        return value switch
+        {
+            null => 0L,
+            long longValue => longValue,
+            int intValue => intValue,
+            short shortValue => shortValue,
+            byte byteValue => byteValue,
+            decimal decimalValue => decimal.ToInt64(decimalValue),
+            double doubleValue => checked((long)doubleValue),
+            float floatValue => checked((long)floatValue),
+            string stringValue when long.TryParse(stringValue, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed) => parsed,
+            byte[] bytes => ParseLong(bytes),
+            _ => Convert.ToInt64(value, CultureInfo.InvariantCulture)
+        };
+    }
+
+    private static long ParseLong(byte[] bytes)
+    {
+        if (bytes.Length == sizeof(long))
+        {
+            return BitConverter.ToInt64(bytes, 0);
+        }
+
+        var text = Encoding.UTF8.GetString(bytes);
+        if (long.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed))
+        {
+            return parsed;
+        }
+
+        throw new InvalidOperationException($"Unable to convert blob value of length {bytes.Length} to Int64.");
     }
 
     private static DateTimeOffset ParseDate(string value)
@@ -548,4 +672,23 @@ public sealed class SqliteResultsQueries
         long ErrorCount,
         long WarningCount,
         long InfoCount);
+
+    private sealed class FileSummaryRow
+    {
+        public long FileId { get; set; }
+
+        public string FilePath { get; set; } = string.Empty;
+
+        public string? Category { get; set; }
+
+        public string? Language { get; set; }
+
+        public object? FindingCount { get; set; }
+
+        public object? ErrorCount { get; set; }
+
+        public object? WarningCount { get; set; }
+
+        public object? InfoCount { get; set; }
+    }
 }

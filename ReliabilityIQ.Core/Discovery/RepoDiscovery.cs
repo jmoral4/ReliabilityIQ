@@ -5,10 +5,24 @@ namespace ReliabilityIQ.Core.Discovery;
 public sealed record RepoDiscoveryOptions(
     bool UseGitIgnore = true,
     long MaxFileSizeBytes = 2 * 1024 * 1024,
-    IReadOnlyCollection<string>? AdditionalExcludeDirectories = null);
+    IReadOnlyCollection<string>? AdditionalExcludeDirectories = null,
+    bool ExcludeDotDirectories = true);
 
 public static class RepoDiscovery
 {
+    private static readonly string[] AlwaysExcludedFileSuffixes =
+    [
+        ".db-shm",
+        ".db-wal",
+        ".db-journal"
+    ];
+
+    private static readonly string[] AlwaysExcludedFileNames =
+    [
+        "thumbs.db",
+        "desktop.ini"
+    ];
+
     public static readonly string[] DefaultGeneratedDirectories =
     [
         "bin",
@@ -87,45 +101,114 @@ public static class RepoDiscovery
         foreach (var file in Directory.EnumerateFiles(resolvedRepoRoot, "*", SearchOption.AllDirectories))
         {
             var relativePath = Path.GetRelativePath(resolvedRepoRoot, file).Replace('\\', '/');
-            if (ShouldSkip(relativePath, excludedDirectories, gitIgnoreMatcher))
+            if (ShouldSkip(relativePath, excludedDirectories, gitIgnoreMatcher, options.ExcludeDotDirectories))
             {
                 continue;
             }
 
-            var info = new FileInfo(file);
-            if (info.Length > options.MaxFileSizeBytes)
+            FileInfo info;
+            try
             {
+                info = new FileInfo(file);
+                if (info.Length > options.MaxFileSizeBytes)
+                {
+                    continue;
+                }
+
+                var category = classifier.Classify(relativePath);
+                if (category is FileCategory.Generated or FileCategory.Vendor or FileCategory.IDE)
+                {
+                    continue;
+                }
+
+                var hash = ComputeSha256(file);
+                discovered.Add(new DiscoveredFile(
+                    FullPath: file,
+                    RelativePath: relativePath,
+                    Category: category,
+                    Language: classifier.DetectLanguage(relativePath),
+                    SizeBytes: info.Length,
+                    ContentHash: hash));
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // Best-effort discovery: skip transiently locked or inaccessible files.
                 continue;
             }
-
-            var category = classifier.Classify(relativePath);
-            if (category is FileCategory.Generated or FileCategory.Vendor or FileCategory.IDE)
-            {
-                continue;
-            }
-
-            var hash = ComputeSha256(file);
-            discovered.Add(new DiscoveredFile(
-                FullPath: file,
-                RelativePath: relativePath,
-                Category: category,
-                Language: classifier.DetectLanguage(relativePath),
-                SizeBytes: info.Length,
-                ContentHash: hash));
         }
 
         return discovered;
     }
 
-    private static bool ShouldSkip(string relativePath, HashSet<string> excludedDirectories, GitIgnoreMatcher gitIgnoreMatcher)
+    private static bool ShouldSkip(
+        string relativePath,
+        HashSet<string> excludedDirectories,
+        GitIgnoreMatcher gitIgnoreMatcher,
+        bool excludeDotDirectories)
     {
+        if (IsAlwaysExcludedFile(relativePath))
+        {
+            return true;
+        }
+
         var normalized = "/" + relativePath.TrimStart('/');
         if (FileClassifier.IsInDirectory(normalized, excludedDirectories))
         {
             return true;
         }
 
+        if (excludeDotDirectories && IsInDotDirectory(relativePath))
+        {
+            return true;
+        }
+
         return gitIgnoreMatcher.IsMatch(relativePath);
+    }
+
+    private static bool IsAlwaysExcludedFile(string relativePath)
+    {
+        var fileName = Path.GetFileName(relativePath);
+        if (fileName.Length == 0)
+        {
+            return false;
+        }
+
+        foreach (var name in AlwaysExcludedFileNames)
+        {
+            if (string.Equals(fileName, name, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        foreach (var suffix in AlwaysExcludedFileSuffixes)
+        {
+            if (fileName.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsInDotDirectory(string relativePath)
+    {
+        var normalized = relativePath.TrimStart('/').Replace('\\', '/');
+        var slashIndex = normalized.IndexOf('/');
+        while (slashIndex >= 0)
+        {
+            var segment = normalized[..slashIndex];
+            if (segment.StartsWith(".", StringComparison.Ordinal))
+            {
+                return true;
+            }
+
+            normalized = normalized[(slashIndex + 1)..];
+            slashIndex = normalized.IndexOf('/');
+        }
+
+        return false;
     }
 
     private static HashSet<string> BuildExcludedDirectorySet(IReadOnlyCollection<string> additional)

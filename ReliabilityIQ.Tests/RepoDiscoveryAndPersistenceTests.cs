@@ -22,13 +22,19 @@ public sealed class RepoDiscoveryAndPersistenceTests : IDisposable
         Directory.CreateDirectory(Path.Combine(_tempDir, ".git"));
         Directory.CreateDirectory(Path.Combine(_tempDir, "src"));
         Directory.CreateDirectory(Path.Combine(_tempDir, "bin"));
+        Directory.CreateDirectory(Path.Combine(_tempDir, ".venv", "lib"));
+        Directory.CreateDirectory(Path.Combine(_tempDir, "src", ".cache"));
         Directory.CreateDirectory(Path.Combine(_tempDir, "node_modules", "leftpad"));
 
         File.WriteAllText(Path.Combine(_tempDir, ".gitignore"), "ignored.txt");
         File.WriteAllText(Path.Combine(_tempDir, "src", "program.cs"), "class P {}");
+        File.WriteAllText(Path.Combine(_tempDir, ".venv", "lib", "site.py"), "print('skip')");
+        File.WriteAllText(Path.Combine(_tempDir, "src", ".cache", "artifact.json"), "{\"skip\":true}");
         File.WriteAllText(Path.Combine(_tempDir, "bin", "output.dll"), "skip");
         File.WriteAllText(Path.Combine(_tempDir, "ignored.txt"), "skip");
         File.WriteAllText(Path.Combine(_tempDir, "node_modules", "leftpad", "index.js"), "skip");
+        File.WriteAllText(Path.Combine(_tempDir, "reliabilityiq-results.db-shm"), "skip");
+        File.WriteAllText(Path.Combine(_tempDir, "reliabilityiq-results.db-wal"), "skip");
 
         var files = RepoDiscovery.DiscoverFiles(_tempDir, options: new RepoDiscoveryOptions(UseGitIgnore: true));
 
@@ -36,6 +42,10 @@ public sealed class RepoDiscoveryAndPersistenceTests : IDisposable
         Assert.DoesNotContain(files, file => file.RelativePath == "ignored.txt");
         Assert.DoesNotContain(files, file => file.RelativePath.Contains("node_modules", StringComparison.Ordinal));
         Assert.DoesNotContain(files, file => file.RelativePath.StartsWith("bin/", StringComparison.Ordinal));
+        Assert.DoesNotContain(files, file => file.RelativePath.StartsWith(".venv/", StringComparison.Ordinal));
+        Assert.DoesNotContain(files, file => file.RelativePath.Contains("/.cache/", StringComparison.Ordinal));
+        Assert.DoesNotContain(files, file => file.RelativePath.EndsWith(".db-shm", StringComparison.Ordinal));
+        Assert.DoesNotContain(files, file => file.RelativePath.EndsWith(".db-wal", StringComparison.Ordinal));
     }
 
     [Fact]

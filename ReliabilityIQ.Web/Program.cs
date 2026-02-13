@@ -1,6 +1,7 @@
 using ReliabilityIQ.Core.Persistence.Queries;
 using ReliabilityIQ.Web.Configuration;
 using ReliabilityIQ.Web.Data;
+using ReliabilityIQ.Web.MagicStrings;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -90,6 +91,7 @@ app.MapGet("/api/run/{runId}/findings", async (
     var filters = new FindingsQueryFilters(
         Severity: NullIfEmpty(request.Query["severity"].ToString()),
         RuleId: NullIfEmpty(request.Query["rule"].ToString()),
+        RulePrefix: NullIfEmpty(request.Query["rulePrefix"].ToString()),
         Confidence: NullIfEmpty(request.Query["confidence"].ToString()),
         FileCategory: NullIfEmpty(request.Query["fileCategory"].ToString()),
         Language: NullIfEmpty(request.Query["language"].ToString()),
@@ -133,6 +135,113 @@ app.MapGet("/api/run/{runId}/findings", async (
         })
     });
 });
+
+app.MapGet("/api/run/{runId}/magic-strings", async (
+    string runId,
+    HttpRequest request,
+    SqliteResultsQueries queries,
+    CancellationToken cancellationToken) =>
+{
+    var draw = ParseInt(request.Query["draw"], 1);
+    var minScore = ParseDouble(request.Query["minScore"], 0d);
+    var minOccurrences = Math.Max(1, ParseInt(request.Query["minOccurrences"], 2));
+    var topN = Math.Clamp(ParseInt(request.Query["topN"], 25), 1, 100);
+    var scope = NullIfEmpty(request.Query["scope"].ToString()) ?? "overall";
+    var language = NullIfEmpty(request.Query["language"].ToString());
+    var pathPrefix = NullIfEmpty(request.Query["pathPrefix"].ToString());
+
+    var findings = await queries.GetFindingsByRulePrefix(runId, "magic-string.", includeSuppressed: true, cancellationToken).ConfigureAwait(false);
+    var projected = MagicStringsProjection.BuildCandidates(findings);
+    var filtered = MagicStringsProjection.ApplyFilters(projected, minScore, minOccurrences, language, pathPrefix);
+    var scoped = MagicStringsProjection.ApplyScope(filtered, scope, topN);
+
+    return Results.Ok(new
+    {
+        draw,
+        recordsTotal = projected.Count,
+        recordsFiltered = filtered.Count,
+        data = scoped.Select(candidate => new
+        {
+            findingId = candidate.FindingId,
+            ruleId = candidate.RuleId,
+            literal = candidate.Literal,
+            magicScore = candidate.MagicScore,
+            occurrenceCount = candidate.OccurrenceCount,
+            topFilePath = candidate.TopFilePath,
+            topLine = candidate.TopLine,
+            topColumn = candidate.TopColumn,
+            module = candidate.Module,
+            contextSummary = candidate.ContextSummary,
+            languages = candidate.Languages,
+            occurrences = candidate.Occurrences
+        })
+    });
+});
+
+app.MapGet("/api/run/{runId}/magic-strings/modules", async (
+    string runId,
+    HttpRequest request,
+    SqliteResultsQueries queries,
+    CancellationToken cancellationToken) =>
+{
+    var minScore = ParseDouble(request.Query["minScore"], 0d);
+    var minOccurrences = Math.Max(1, ParseInt(request.Query["minOccurrences"], 2));
+    var topN = Math.Clamp(ParseInt(request.Query["topN"], 10), 1, 100);
+    var language = NullIfEmpty(request.Query["language"].ToString());
+    var pathPrefix = NullIfEmpty(request.Query["pathPrefix"].ToString());
+
+    var findings = await queries.GetFindingsByRulePrefix(runId, "magic-string.", includeSuppressed: true, cancellationToken).ConfigureAwait(false);
+    var projected = MagicStringsProjection.BuildCandidates(findings);
+    var filtered = MagicStringsProjection.ApplyFilters(projected, minScore, minOccurrences, language, pathPrefix);
+    var moduleGroups = MagicStringsProjection.BuildModuleGroups(filtered, topN);
+
+    return Results.Ok(moduleGroups.Select(group => new
+    {
+        module = group.Module,
+        totalCandidates = group.TotalCandidates,
+        candidates = group.Candidates.Select(candidate => new
+        {
+            findingId = candidate.FindingId,
+            ruleId = candidate.RuleId,
+            literal = candidate.Literal,
+            magicScore = candidate.MagicScore,
+            occurrenceCount = candidate.OccurrenceCount,
+            topFilePath = candidate.TopFilePath,
+            topLine = candidate.TopLine,
+            topColumn = candidate.TopColumn,
+            languages = candidate.Languages
+        })
+    }));
+});
+
+app.MapGet("/api/run/{runId}/magic-strings/filters", async (
+    string runId,
+    SqliteResultsQueries queries,
+    CancellationToken cancellationToken) =>
+{
+    var findings = await queries.GetFindingsByRulePrefix(runId, "magic-string.", includeSuppressed: true, cancellationToken).ConfigureAwait(false);
+    var projected = MagicStringsProjection.BuildCandidates(findings);
+    var languages = projected
+        .SelectMany(candidate => candidate.Languages)
+        .Where(language => !string.IsNullOrWhiteSpace(language))
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .OrderBy(language => language, StringComparer.OrdinalIgnoreCase)
+        .ToList();
+
+    var modules = projected
+        .Select(candidate => candidate.Module)
+        .Where(module => !string.IsNullOrWhiteSpace(module))
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .OrderBy(module => module, StringComparer.OrdinalIgnoreCase)
+        .ToList();
+
+    return Results.Ok(new
+    {
+        languages,
+        modules,
+        totalCandidates = projected.Count
+    });
+});
 app.Run();
 
 static int ParseInt(string? value, int fallback)
@@ -143,6 +252,13 @@ static int ParseInt(string? value, int fallback)
 static string? NullIfEmpty(string? value)
 {
     return string.IsNullOrWhiteSpace(value) ? null : value;
+}
+
+static double ParseDouble(string? value, double fallback)
+{
+    return double.TryParse(value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var parsed)
+        ? parsed
+        : fallback;
 }
 
 static FindingsSortField ParseSortField(string? sortField)

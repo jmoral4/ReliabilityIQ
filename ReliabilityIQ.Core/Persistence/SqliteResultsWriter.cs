@@ -6,6 +6,8 @@ namespace ReliabilityIQ.Core.Persistence;
 public sealed class SqliteResultsWriter
 {
     private const int BatchSize = 1000;
+    private const int BusyTimeoutMilliseconds = 30000;
+    private const int MaxWriteAttempts = 3;
     private readonly string _connectionString;
     private readonly SqliteSchemaManager _schemaManager;
 
@@ -20,6 +22,8 @@ public sealed class SqliteResultsWriter
         {
             DataSource = Path.GetFullPath(databasePath),
             Mode = SqliteOpenMode.ReadWriteCreate,
+            Cache = SqliteCacheMode.Shared,
+            DefaultTimeout = BusyTimeoutMilliseconds / 1000,
             Pooling = true
         }.ToString();
         _schemaManager = schemaManager ?? new SqliteSchemaManager();
@@ -30,6 +34,7 @@ public sealed class SqliteResultsWriter
         IReadOnlyList<PersistedFile> files,
         IReadOnlyList<Finding> findings,
         IReadOnlyList<RuleDefinition> rules,
+        IReadOnlyList<GitFileMetric>? gitFileMetrics = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(run);
@@ -37,24 +42,73 @@ public sealed class SqliteResultsWriter
         ArgumentNullException.ThrowIfNull(findings);
         ArgumentNullException.ThrowIfNull(rules);
 
-        await using var connection = new SqliteConnection(_connectionString);
-        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
-        await _schemaManager.EnsureSchemaAsync(connection, cancellationToken).ConfigureAwait(false);
+        await WriteWithRetryAsync(async () =>
+        {
+            await using var connection = new SqliteConnection(_connectionString);
+            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+            await ConfigureConnectionAsync(connection, cancellationToken).ConfigureAwait(false);
+            await _schemaManager.EnsureSchemaAsync(connection, cancellationToken).ConfigureAwait(false);
 
-        await UpsertRunAsync(connection, run).ConfigureAwait(false);
-        await UpsertRulesAsync(connection, rules).ConfigureAwait(false);
-        await ClearRunDataAsync(connection, run.RunId).ConfigureAwait(false);
+            await UpsertRunAsync(connection, run).ConfigureAwait(false);
+            await UpsertRulesAsync(connection, rules).ConfigureAwait(false);
+            await ClearRunDataAsync(connection, run.RunId).ConfigureAwait(false);
 
-        var fileIdByPath = await InsertFilesAsync(connection, run.RunId, files).ConfigureAwait(false);
-        await InsertFindingsAsync(connection, run.RunId, findings, fileIdByPath).ConfigureAwait(false);
+            var fileIdByPath = await InsertFilesAsync(connection, run.RunId, files).ConfigureAwait(false);
+            await InsertFindingsAsync(connection, run.RunId, findings, fileIdByPath).ConfigureAwait(false);
+            await InsertGitFileMetricsAsync(connection, run.RunId, gitFileMetrics ?? [], fileIdByPath).ConfigureAwait(false);
+        }, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task ConfigureConnectionAsync(SqliteConnection connection, CancellationToken cancellationToken)
+    {
+        const string sql = """
+                           PRAGMA busy_timeout = 30000;
+                           PRAGMA journal_mode = WAL;
+                           PRAGMA synchronous = NORMAL;
+                           """;
+
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        await command.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private static async Task WriteWithRetryAsync(Func<Task> writeOperation, CancellationToken cancellationToken)
+    {
+        var delay = TimeSpan.FromMilliseconds(200);
+
+        for (var attempt = 1; attempt <= MaxWriteAttempts; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            try
+            {
+                await writeOperation().ConfigureAwait(false);
+                return;
+            }
+            catch (SqliteException ex) when (attempt < MaxWriteAttempts && IsTransientLock(ex))
+            {
+                await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
+                delay = TimeSpan.FromMilliseconds(delay.TotalMilliseconds * 2);
+            }
+        }
+    }
+
+    private static bool IsTransientLock(SqliteException ex)
+    {
+        return ex.SqliteErrorCode is 5 or 6 or 14 ||
+               ex.Message.Contains("being used by another process", StringComparison.OrdinalIgnoreCase) ||
+               ex.Message.Contains("database is locked", StringComparison.OrdinalIgnoreCase) ||
+               ex.Message.Contains("database is busy", StringComparison.OrdinalIgnoreCase);
     }
 
     private static async Task ClearRunDataAsync(SqliteConnection connection, string runId)
     {
         await using var transaction = await connection.BeginTransactionAsync().ConfigureAwait(false);
         const string deleteFindings = "DELETE FROM findings WHERE run_id = @RunId;";
+        const string deleteGitMetrics = "DELETE FROM git_file_metrics WHERE run_id = @RunId;";
         const string deleteFiles = "DELETE FROM files WHERE run_id = @RunId;";
         await connection.ExecuteAsync(deleteFindings, new { RunId = runId }, transaction).ConfigureAwait(false);
+        await connection.ExecuteAsync(deleteGitMetrics, new { RunId = runId }, transaction).ConfigureAwait(false);
         await connection.ExecuteAsync(deleteFiles, new { RunId = runId }, transaction).ConfigureAwait(false);
         await transaction.CommitAsync().ConfigureAwait(false);
     }
@@ -204,6 +258,69 @@ public sealed class SqliteResultsWriter
                     Confidence = finding.Confidence.ToString(),
                     finding.Fingerprint,
                     finding.Metadata
+                });
+            }
+
+            if (payload.Count > 0)
+            {
+                await connection.ExecuteAsync(sql, payload, transaction).ConfigureAwait(false);
+            }
+
+            await transaction.CommitAsync().ConfigureAwait(false);
+        }
+    }
+
+    private static async Task InsertGitFileMetricsAsync(
+        SqliteConnection connection,
+        string runId,
+        IReadOnlyList<GitFileMetric> metrics,
+        IReadOnlyDictionary<string, long> fileIdByPath)
+    {
+        if (metrics.Count == 0)
+        {
+            return;
+        }
+
+        const string sql = """
+                           INSERT INTO git_file_metrics (
+                               run_id, file_id, file_path, last_commit_at, commits_30d, commits_90d, commits_180d,
+                               commits_365d, authors_365d, ownership_concentration, lines_added_365d, lines_removed_365d,
+                               churn_score, stale_score, top_author, top_author_pct)
+                           VALUES (
+                               @RunId, @FileId, @FilePath, @LastCommitAt, @Commits30d, @Commits90d, @Commits180d,
+                               @Commits365d, @Authors365d, @OwnershipConcentration, @LinesAdded365d, @LinesRemoved365d,
+                               @ChurnScore, @StaleScore, @TopAuthor, @TopAuthorPct);
+                           """;
+
+        foreach (var batch in Batch(metrics))
+        {
+            await using var transaction = await connection.BeginTransactionAsync().ConfigureAwait(false);
+            var payload = new List<object>(batch.Count);
+            foreach (var metric in batch)
+            {
+                if (!fileIdByPath.TryGetValue(metric.FilePath, out var fileId))
+                {
+                    continue;
+                }
+
+                payload.Add(new
+                {
+                    RunId = runId,
+                    FileId = fileId,
+                    metric.FilePath,
+                    LastCommitAt = metric.LastCommitAt?.UtcDateTime.ToString("O"),
+                    metric.Commits30d,
+                    metric.Commits90d,
+                    metric.Commits180d,
+                    metric.Commits365d,
+                    metric.Authors365d,
+                    metric.OwnershipConcentration,
+                    metric.LinesAdded365d,
+                    metric.LinesRemoved365d,
+                    metric.ChurnScore,
+                    metric.StaleScore,
+                    metric.TopAuthor,
+                    metric.TopAuthorPct
                 });
             }
 

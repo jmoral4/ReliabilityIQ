@@ -13,6 +13,7 @@ public static class Program
         var scan = new Command("scan", "Run scans");
         scan.AddCommand(CreatePortabilityCommand());
         scan.AddCommand(CreateMagicStringsCommand());
+        scan.AddCommand(CreateChurnCommand());
         scan.AddCommand(CreateAllScansCommand());
         root.AddCommand(scan);
 
@@ -122,7 +123,7 @@ public static class Program
 
     private static Command CreateAllScansCommand()
     {
-        var command = new Command("all", "Run portability and magic strings scans");
+        var command = new Command("all", "Run portability, magic strings, and churn scans");
 
         var repoOption = new Option<DirectoryInfo>("--repo", "Repository path to scan")
         {
@@ -134,6 +135,8 @@ public static class Program
         var minOccurrencesOption = new Option<int>("--min-occurrences", () => 2, "Minimum occurrence count required for magic string candidates.");
         var topOption = new Option<int>("--top", () => 500, "Maximum number of ranked magic string candidates to persist.");
         var configOption = new Option<FileInfo?>("--config", "Optional magic strings YAML config path (default: <repo-root>/reliabilityiq.magicstrings.yaml)");
+        var sinceOption = new Option<string>("--since", () => "365d", "Git lookback window for churn scan (e.g., 90d, 180d, 365d).");
+        var serviceMapOption = new Option<FileInfo?>("--service-map", "Optional service boundary mapping file (format: ServiceName=glob).");
 
         command.AddOption(repoOption);
         command.AddOption(dbOption);
@@ -142,9 +145,21 @@ public static class Program
         command.AddOption(minOccurrencesOption);
         command.AddOption(topOption);
         command.AddOption(configOption);
+        command.AddOption(sinceOption);
+        command.AddOption(serviceMapOption);
 
-        command.SetHandler(async (repo, db, failOn, suppressions, minOccurrences, top, config) =>
+        command.SetHandler(async context =>
         {
+            var repo = context.ParseResult.GetValueForOption(repoOption)!;
+            var db = context.ParseResult.GetValueForOption(dbOption);
+            var failOn = context.ParseResult.GetValueForOption(failOnOption)!;
+            var suppressions = context.ParseResult.GetValueForOption(suppressionsOption);
+            var minOccurrences = context.ParseResult.GetValueForOption(minOccurrencesOption);
+            var top = context.ParseResult.GetValueForOption(topOption);
+            var config = context.ParseResult.GetValueForOption(configOption);
+            var since = context.ParseResult.GetValueForOption(sinceOption)!;
+            var serviceMap = context.ParseResult.GetValueForOption(serviceMapOption);
+
             if (!TryParseFailOn(failOn, out var failOnSeverity))
             {
                 Console.Error.WriteLine("Invalid value for --fail-on. Allowed values: error, warning, info.");
@@ -168,8 +183,47 @@ public static class Program
                 Console.Out,
                 CancellationToken.None).ConfigureAwait(false);
 
-            Environment.ExitCode = magicExitCode == 2 ? 2 : portabilityExitCode;
-        }, repoOption, dbOption, failOnOption, suppressionsOption, minOccurrencesOption, topOption, configOption);
+            if (magicExitCode == 2)
+            {
+                Environment.ExitCode = 2;
+                return;
+            }
+
+            var churnExitCode = await ChurnScanRunner.ExecuteAsync(
+                new ChurnScanOptions(repo.FullName, db?.FullName, since, serviceMap?.FullName),
+                Console.Out,
+                CancellationToken.None).ConfigureAwait(false);
+
+            Environment.ExitCode = churnExitCode == 2 ? 2 : portabilityExitCode;
+        });
+
+        return command;
+    }
+
+    private static Command CreateChurnCommand()
+    {
+        var command = new Command("churn", "Run Git churn/staleness scan and persist metrics to SQLite");
+
+        var repoOption = new Option<DirectoryInfo>("--repo", "Repository path to scan")
+        {
+            IsRequired = true
+        };
+
+        var dbOption = new Option<FileInfo?>("--db", "SQLite database file path (default: <repo-root>/reliabilityiq-results.db)");
+        var sinceOption = new Option<string>("--since", () => "365d", "Git lookback window (e.g., 90d, 180d, 365d).");
+        var serviceMapOption = new Option<FileInfo?>("--service-map", "Optional service boundary mapping file (format: ServiceName=glob).");
+
+        command.AddOption(repoOption);
+        command.AddOption(dbOption);
+        command.AddOption(sinceOption);
+        command.AddOption(serviceMapOption);
+
+        command.SetHandler(async (repo, db, since, serviceMap) =>
+        {
+            var options = new ChurnScanOptions(repo.FullName, db?.FullName, since, serviceMap?.FullName);
+            var exitCode = await ChurnScanRunner.ExecuteAsync(options, Console.Out, CancellationToken.None).ConfigureAwait(false);
+            Environment.ExitCode = exitCode;
+        }, repoOption, dbOption, sinceOption, serviceMapOption);
 
         return command;
     }

@@ -1,0 +1,49 @@
+# ReliabilityIQ magic strings tuning
+# Keys supported by current CLI parser:
+# - minOccurrences
+# - maxFindingsPerDirectory
+# - maxFindingsTotal
+# - entropyThreshold
+# - allowlist
+# - denylist
+# - loggingSinks
+
+minOccurrences: 2
+maxFindingsPerDirectory: 50
+maxFindingsTotal: 500
+entropyThreshold: 4.2
+
+# Patterns to ignore globally (wildcard support: * and ?)
+allowlist:
+  - "https://*"
+  - "http://*"
+  - "urn:*"
+  - "application/json"
+  - "text/plain"
+  - "UTF-8"
+
+# Patterns to force-include even if other heuristics would down-rank/ignore
+# Leave empty by default and add intentionally.
+denylist:
+  # - "ACTIVE"
+
+# Optional per-language logging sinks (used to suppress log-only literals)
+# If omitted for a language, built-in defaults are used.
+loggingSinks:
+  csharp:
+    - "Console.Write"
+    - "ILogger"
+    - "Log"
+    - "Trace"
+    - "Debug"
+    - "Serilog"
+  python:
+    - "logging."
+    - "logger."
+    - "print("
+  powershell:
+    - "Write-Host"
+    - "Write-Output"
+    - "Write-Verbose"
+    - "Write-Debug"
+    - "Write-Information"

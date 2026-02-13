@@ -119,6 +119,7 @@ ReliabilityIQ scans a source code repository (and its Git history / incident met
 
 ### 5.2 Default excludes (configurable)
 - Common build outputs + IDE artifacts
+- Any dot-directory by default (e.g., `.venv/`, `.cache/`, `.github/`, `.terraform/`), except scanner internals that read `.git` metadata explicitly
 - Lock files and minified bundles (optional)
 - Large binaries by default (skip by size threshold)
 - `.gitignore` patterns are treated as implicit excludes by default (`repo.useGitIgnore: true`), with config to disable.

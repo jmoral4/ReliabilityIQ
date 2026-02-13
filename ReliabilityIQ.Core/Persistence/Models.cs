@@ -21,3 +21,19 @@ public sealed record RuleDefinition(
     string Title,
     FindingSeverity DefaultSeverity,
     string Description);
+
+public sealed record GitFileMetric(
+    string FilePath,
+    DateTimeOffset? LastCommitAt,
+    int Commits30d,
+    int Commits90d,
+    int Commits180d,
+    int Commits365d,
+    int Authors365d,
+    double OwnershipConcentration,
+    int LinesAdded365d,
+    int LinesRemoved365d,
+    double ChurnScore,
+    double? StaleScore,
+    string? TopAuthor,
+    double TopAuthorPct);

@@ -123,7 +123,7 @@ public static class PortabilityScanRunner
 
             var dbPath = ResolveDatabasePath(options.DatabasePath, repoRoot);
             var writer = new SqliteResultsWriter(dbPath);
-            await writer.WriteAsync(run, persistedFiles, normalizedFindings, PortabilityRuleDefinitions.Rules, cancellationToken)
+            await writer.WriteAsync(run, persistedFiles, normalizedFindings, PortabilityRuleDefinitions.Rules, cancellationToken: cancellationToken)
                 .ConfigureAwait(false);
 
             await PrintSummaryAsync(output, run, dbPath, normalizedFindings).ConfigureAwait(false);

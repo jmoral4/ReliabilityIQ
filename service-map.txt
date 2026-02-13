@@ -1,0 +1,12 @@
+# ReliabilityIQ churn service boundary mapping
+# Format: ServiceName=glob
+# You may also use ':' as separator.
+#
+# These are examples; adjust to your repo layout.
+
+Core=ReliabilityIQ.Core/**
+Cli=ReliabilityIQ.Cli/**
+Web=ReliabilityIQ.Web/**
+Analyzers=ReliabilityIQ.Analyzers.*/**
+Tests=ReliabilityIQ.Tests/**
+Docs=Docs/**

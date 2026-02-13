@@ -86,7 +86,7 @@ public static class MagicStringsScanRunner
 
             var dbPath = ResolveDatabasePath(options.DatabasePath, repoRoot);
             var writer = new SqliteResultsWriter(dbPath);
-            await writer.WriteAsync(run, persistedFiles, findings, MagicStringRuleDefinitions.AllRules, cancellationToken).ConfigureAwait(false);
+            await writer.WriteAsync(run, persistedFiles, findings, MagicStringRuleDefinitions.AllRules, cancellationToken: cancellationToken).ConfigureAwait(false);
 
             await PrintSummaryAsync(output, run, dbPath, candidates, options.Top).ConfigureAwait(false);
             return 0;

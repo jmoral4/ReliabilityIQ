@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Threading;
 using System.Text.RegularExpressions;
 using ReliabilityIQ.Core;
 using ReliabilityIQ.Core.Portability;
@@ -47,8 +48,7 @@ public sealed class TreeSitterPortabilityAnalyzer : IAnalyzer
             return Task.FromResult<IEnumerable<Finding>>([]);
         }
 
-        var nativeReady = TreeSitterNative.TryCreateParser(out var worker);
-        worker?.Dispose();
+        var nativeReady = TreeSitterNative.IsParserAvailable();
 
         var findings = new List<Finding>();
         var lines = context.Content.Split('\n');
@@ -223,6 +223,7 @@ public sealed class TreeSitterPortabilityAnalyzer : IAnalyzer
     private static class TreeSitterNative
     {
         private const string LibraryName = "tree-sitter";
+        private static int _availabilityState; // 0 unknown, 1 available, -1 unavailable
 
         [DllImport(LibraryName, EntryPoint = "ts_parser_new", CallingConvention = CallingConvention.Cdecl)]
         private static extern IntPtr TsParserNew();
@@ -230,9 +231,27 @@ public sealed class TreeSitterPortabilityAnalyzer : IAnalyzer
         [DllImport(LibraryName, EntryPoint = "ts_parser_delete", CallingConvention = CallingConvention.Cdecl)]
         private static extern void TsParserDelete(IntPtr parser);
 
-        public static bool TryCreateParser(out TreeSitterWorker? worker)
+        public static bool IsParserAvailable()
         {
-            worker = null;
+            var state = Volatile.Read(ref _availabilityState);
+            if (state != 0)
+            {
+                return state > 0;
+            }
+
+            state = ProbeParserAvailability() ? 1 : -1;
+            Interlocked.CompareExchange(ref _availabilityState, state, 0);
+            return Volatile.Read(ref _availabilityState) > 0;
+        }
+
+        private static bool ProbeParserAvailability()
+        {
+            if (!NativeLibrary.TryLoad(LibraryName, out var handle))
+            {
+                return false;
+            }
+
+            NativeLibrary.Free(handle);
 
             try
             {
@@ -242,7 +261,7 @@ public sealed class TreeSitterPortabilityAnalyzer : IAnalyzer
                     return false;
                 }
 
-                worker = new TreeSitterWorker(parser);
+                TsParserDelete(parser);
                 return true;
             }
             catch (DllNotFoundException)
@@ -255,25 +274,5 @@ public sealed class TreeSitterPortabilityAnalyzer : IAnalyzer
             }
         }
 
-        public sealed class TreeSitterWorker : IDisposable
-        {
-            private IntPtr _parser;
-
-            public TreeSitterWorker(IntPtr parser)
-            {
-                _parser = parser;
-            }
-
-            public void Dispose()
-            {
-                if (_parser == IntPtr.Zero)
-                {
-                    return;
-                }
-
-                TsParserDelete(_parser);
-                _parser = IntPtr.Zero;
-            }
-        }
     }
 }
