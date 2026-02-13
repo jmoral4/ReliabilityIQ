@@ -1,0 +1,788 @@
+
+# AGENT 2 SUGGESTIONS:
+## 3. CLI Scanner Design
+
+The CLI will be built using **.NET 8/9** utilizing `System.CommandLine`. It relies on a plugin architecture where each "Scanner" implements a common interface.
+
+### 3.1 Interface Design
+```csharp
+public interface IScanner
+{
+    string Name { get; }
+    // Analyze a specific file or the whole repository context
+    ScanResult Analyze(RepositoryContext context, ILogger logger);
+}
+```
+
+### 3.2 Core Scanners
+
+#### A. Portability Scanner (Hardcoded Values)
+Detects environment-specific assumptions that break cross-cloud deployments.
+*   **Target:** `C#`, `C++`, `Python`, `PowerShell`, `Rust`, `JSON`, `YAML`.
+*   **Methodology:**
+    *   **Regex Engine:** High-performance regex for general text files.
+    *   **AST Analysis (C#/Roslyn):** Precise detection of string literals in code (ignoring comments) for C#.
+*   **Specific Patterns:**
+    *   **Paths:** Absolute paths starting with drive letters (`C:\`, `D:\`) or UNC paths (`\\server\share`).
+    *   **Network:** IPv4/IPv6 literals, `localhost` bindings that should be `0.0.0.0`.
+    *   **DNS:** Hardcoded internal domains (e.g., `*.corp.microsoft.com`, `*.redmond.corp.microsoft.com`).
+    *   **Cloud Specifics:** Hardcoded Azure region strings (`westus2`, `eastus`) or AWS ARNs in code rather than config.
+
+#### B. Magic String & Secret Scanner
+*   **Problem:** High false positive rate in standard parsing.
+*   **Heuristic Approach:**
+    1.  **Entropy Analysis:** Calculate Shannon entropy for string literals. High entropy = potential API key/Secret. Low entropy = configuration string.
+    2.  **Context Filtering (AST):**
+        *   *Flag:* Strings used in comparison logic (`if (status == "Active")`).
+        *   *Ignore:* Strings inside Loggers (`Log.Info("Starting service...")`).
+    3.  **Frequency Analysis:** If a string literal appears > 5 times across the codebase, it is a "Magic String" that should be a constant/enum.
+
+#### C. Code Churn & Staleness Scanner
+Uses `LibGit2Sharp` to analyze the local `.git` folder.
+*   **Hotspot Analysis:** Count commits per file over the last $N$ days. High churn = High risk of regression.
+*   **Staleness Analysis:** Identify files not touched in $> 2$ years.
+    *   *Risk:* "Knowledge rot" (original authors likely gone).
+*   **Noise Filtering:**
+    *   Ignore files in `.gitignore`.
+    *   Configurable exclusion list (Extensions: `.md`, `.sln`, `.png`; Folders: `docs/`, `tests/`).
+
+#### D. Incident Correlator (ICM/GitHub)
+*   **Input:** JSON export of incidents or direct API connection to Microsoft ICM / GitHub Issues.
+*   **Mapping Strategy:**
+    *   *Service Mapping:* Config file maps Service Names (e.g., "AuthenticationService") to Folder Paths (e.g., `/src/Auth/`).
+    *   *Keyword Mapping:* Search incident descriptions/titles for filenames or module names.
+*   **Output:** Adds a "Reliability Score" penalty to specific folders/modules based on associated ticket volume.
+
+#### E. Deployment Artifact Scanner (EV2 / ADO)
+*   **Target:** `ServiceGroupRoot.json`, `cluster.config`, `azure-pipelines.yaml`.
+*   **Checks:**
+    *   **Rollout Safety:** Detect if `WaitTime` between deployment stages is 0 or too low (unsafe velocity).
+    *   **Region Pinning:** Detect if specific regions are hardcoded in the deployment spec instead of being parameterized.
+    *   **Secret Exposure:** Scan YAML files for plaintext secrets in variables.
+
+---
+
+## 4. Data Storage (SQLite Schema)
+
+The database is normalized to support efficient querying for the Heatmap UI.
+
+```sql
+-- Represents the codebase structure
+CREATE TABLE Files (
+    Id INTEGER PRIMARY KEY,
+    Path TEXT NOT NULL,
+    Extension TEXT,
+    Module TEXT -- Mapped from folder structure
+);
+
+-- Detected issues (Hardcoded IPs, Magic Strings, etc.)
+CREATE TABLE Issues (
+    Id INTEGER PRIMARY KEY,
+    FileId INTEGER,
+    ScannerName TEXT, -- 'Portability', 'MagicString'
+    Severity TEXT, -- 'Critical', 'Warning'
+    LineNumber INTEGER,
+    Snippet TEXT,
+    Description TEXT,
+    FOREIGN KEY(FileId) REFERENCES Files(Id)
+);
+
+-- Git Statistics
+CREATE TABLE FileStats (
+    FileId INTEGER PRIMARY KEY,
+    CommitCount INTEGER,
+    LastModifiedDate DATETIME,
+    UniqueAuthors INTEGER,
+    IsStale BOOLEAN,
+    FOREIGN KEY(FileId) REFERENCES Files(Id)
+);
+
+-- Incident Correlation
+CREATE TABLE IncidentImpact (
+    Id INTEGER PRIMARY KEY,
+    FileId INTEGER,
+    IncidentId TEXT, -- ICM ID or Github Issue #
+    Severity INTEGER,
+    FOREIGN KEY(FileId) REFERENCES Files(Id)
+);
+```
+
+---
+
+## 5. Configuration Strategy
+
+A `reliability-iq.json` file in the root of the scanned directory controls the behavior.
+
+```json
+{
+  "scanners": {
+    "portability": {
+      "enabled": true,
+      "custom_regex": [
+        { "pattern": "192\\.168\\.\\d+\\.\\d+", "description": "Local LAN IP detected" }
+      ]
+    },
+    "magic_strings": {
+      "ignore_log_statements": true,
+      "min_entropy": 3.5
+    },
+    "churn": {
+      "stale_threshold_days": 730,
+      "exclude_paths": ["docs/*", "**/bin/*", "*.svg"]
+    },
+    "incidents": {
+      "source": "icm_export.json",
+      "module_map": {
+        "UserAuth": "./src/Services/Identity",
+        "Billing": "./src/Services/Commerce"
+      }
+    }
+  }
+}
+```
+
+---
+
+## 6. Web UI & Visualization
+
+The Web UI (ASP.NET Core) serves a read-only view of the SQLite DB.
+
+### 6.1 Views
+1.  **The Risk Heatmap (Treemap Visualization):**
+    *   *Visual:* Nested boxes representing the folder structure (like WinDirStat).
+    *   *Size of Box:* Lines of Code or Complexity.
+    *   *Color of Box:* Risk Heat (Red = High Issues + High Churn + Associated Incidents; Green = Clean).
+    *   *Interaction:* Click a box to drill down into the file details.
+
+2.  **The Violation Table:**
+    *   Sortable grid of all detected issues.
+    *   Columns: File, Line, Rule Broken, Severity, Assigned Team (via CODEOWNERS).
+
+3.  **Module Reliability Report:**
+    *   Aggregates data by "Service" or "Module".
+    *   Chart: "Incidents vs. Churn Rate" (Are we breaking things because we are moving too fast?).
+
+---
+
+## 7. Freestyle Goal: Additional Scan Types
+
+To further align with "Reliability" and "Maintainability," the following scanners are recommended:
+
+### A. Bus Factor / Ownership Scanner
+*   **Goal:** Identify code that only one person understands.
+*   **Logic:** Analyze git history. If > 80% of commits in a module are by a single author (and that author is no longer active in the last 3 months), flag as **"High Attrition Risk"**.
+
+### B. Dependency "Rot" Scanner
+*   **Goal:** Supply chain security and compatibility.
+*   **Logic:** Parse `.csproj` (NuGet), `requirements.txt` (Python), `Cargo.toml` (Rust).
+*   **Check:** Compare versions against a known "End of Life" (EOL) database. (e.g., Flag usage of .NET Core 3.1 or Python 2.7).
+
+### C. Cyclomatic Complexity Scanner
+*   **Goal:** Maintainability.
+*   **Logic:** Calculate complexity per method.
+*   **Correlation:** Overlay this with the Incident Scanner. *Hypothesis:* High Complexity + High Churn = Immediate Refactor Candidate.
+
+### D. "ToDo" Debt Scanner
+*   **Goal:** quantify technical debt admission.
+*   **Logic:** Scan comments for `TODO`, `FIXME`, `HACK`.
+
+
+# AGENT 3 SUGGESTIONS
+## 3. Technology Choices
+
+| Concern | Choice | Rationale |
+|---|---|---|
+| CLI framework | `System.CommandLine` | First-party, supports verbs/options/middleware |
+| C# / Roslyn analysis | `Microsoft.CodeAnalysis.CSharp` | Full semantic model; detects string literals, constants, interpolations |
+| C++ / Rust / PowerShell / Python parsing | `Tree-sitter` via native interop (`tree-sitter` C lib + P/Invoke wrapper) | Language-grammar plugins; uniform AST walk for non-.NET languages |
+| Git history | `LibGit2Sharp` | In-process git log traversal without shelling out |
+| Database | `Microsoft.Data.Sqlite` + Dapper | Lightweight, zero-server, portable |
+| Web UI | ASP.NET Razor Pages + `Chart.js` / `D3.js` heatmap | Minimal JS; can run from `dotnet run` with no Node build step |
+| Config format | YAML (with JSON-schema validation) | Human-friendly; widely understood |
+
+---
+
+## 4. Scanner Modules — Detailed Design
+
+### 4.1 Portability Scanner (`scan-portability`)
+
+**Goal:** Find hardcoded values that bind a project to a single cloud/environment and would break cross-cloud deployments.
+
+#### What it detects
+
+| Signal | Detection Strategy | Example |
+|---|---|---|
+| Hardcoded IPs | Regex `\b\d{1,3}(\.\d{1,3}){3}\b` on string-literal AST nodes; exclude `0.0.0.0`, `127.0.0.1` via configurable allowlist | `"10.0.42.7"` |
+| Hardcoded DNS suffixes | Configurable suffix list (`.windows.net`, `.azure.com`, `.core.windows.net`, `.cloudapp.net`, `.amazonaws.com`, `.googleapis.com`) matched against string literals | `"myaccount.blob.core.windows.net"` |
+| Hardcoded file-system paths | Regex for Windows absolute paths `[A-Za-z]:\\`, Linux absolute paths `/etc/`, `/mnt/`, `/opt/` in string literals. Ignore paths inside comments that look like documentation. | `@"D:\ServiceFabric\Logs"` |
+| Hardcoded ports (non-standard) | Numeric literal or string in known connect/listen call sites; flag if not in common-port allowlist | `new IPEndPoint(ip, 44391)` |
+| Cloud-specific SDK calls | Configurable method-signature patterns (e.g., `BlobServiceClient` without abstraction layer) | Direct Azure Storage SDK usage without interface indirection |
+| Hardcoded registry keys | Regex `HKEY_LOCAL_MACHINE\\` etc. in string literals | `"HKLM\\Software\\MyService"` |
+| Hardcoded connection strings | Regex for `Server=`, `Data Source=`, `AccountKey=` patterns | Inline SQL connection strings |
+| EV2 / ADO-specific paths | Configurable patterns for `ServiceModel.json`, `RolloutSpec.json`, `ScopeBindings.json`; flag if environment parameters are hardcoded rather than tokenised (`{…}` placeholders) | `"ProdRegion": "eastus2"` inside a RolloutSpec |
+
+#### Parse strategy by language
+
+| Language | Parser | Nodes of interest |
+|---|---|---|
+| C# | Roslyn `SyntaxWalker` | `LiteralExpressionSyntax`, `InterpolatedStringExpressionSyntax`, `AssignmentExpressionSyntax` for `const`/`static readonly` |
+| C++ | Tree-sitter `cpp` grammar | `string_literal`, `raw_string_literal`, `number_literal` |
+| Python | Tree-sitter `python` grammar | `string`, `concatenated_string`, `integer` |
+| PowerShell | Tree-sitter `powershell` grammar + regex fallback | `string_expandable`, `string_literal` |
+| Rust | Tree-sitter `rust` grammar | `string_literal`, `raw_string_literal` |
+| JSON/YAML config | Custom tokeniser (Newtonsoft / YamlDotNet) | All scalar values; special handling for EV2 `ServiceModel`, `RolloutSpec`, `ScopeBindings` schemas |
+
+#### Reducing false positives
+
+1. **Context-aware filtering:** If a string literal appears inside a *test* project (`*.Tests.csproj`, `/tests/` path segment), mark severity as `Info` rather than `Warning`.
+2. **Allowlists** in rule YAML: users list known-good values.
+3. **Semantic check (C# only):** If the string is assigned to a variable whose value comes from `IConfiguration`, `Environment.GetEnvironmentVariable`, or a parameter, suppress finding.
+4. **Proximity suppression:** If the same file already reads from config/env within ±5 lines of the literal, downgrade.
+
+---
+
+### 4.2 Magic String Scanner (`scan-magic-strings`)
+
+**Goal:** Surface string literals that act as implicit contracts (feature flags, queue names, table names, telemetry event names, error codes) but are not defined in a central constants location.
+
+#### Heuristic stack (layered to control false-positive rate)
+
+```
+Layer 1 — Exclude obvious non-magic strings
+  ├── Strings ≤ 2 chars (likely format specifiers)
+  ├── Strings that are pure whitespace / punctuation
+  ├── Strings in logging format templates ("{userId} logged in")
+  ├── Strings in XML-doc / <summary> comments
+  ├── Strings in attribute arguments that are compile-time metadata
+  ├── Strings matching known resource keys (resx lookup)
+  └── Strings in test assertions (Assert.Equal("expected", …))
+
+Layer 2 — Flag likely magic strings
+  ├── Same literal appears in ≥ N files (configurable, default 2)
+  │     → Indicates a cross-cutting implicit contract
+  ├── Literal used as dictionary key, switch/case label, or
+  │   if-equality operand
+  ├── Literal used as argument to methods whose parameter name
+  │   matches configurable patterns: *name, *key, *queue,
+  │   *topic, *event, *route, *action, *feature*
+  └── Literal matches known "domain shape" regexes:
+        - kebab-case/snake_case identifiers ≥ 8 chars
+        - dot-separated hierarchical names (a.b.c)
+        - URI paths (/api/v2/…)
+
+Layer 3 — Confidence scoring
+  Each finding gets a score 0–100 based on how many Layer 2
+  signals fire. Only findings ≥ threshold (default 40) are
+  persisted. Threshold is configurable per-rule.
+```
+
+#### Duplicate-literal aggregation
+
+Rather than filing one finding *per occurrence*, the scanner groups identical literals and reports:
+
+```
+┌────────────────────────┬───────┬──────────────────────────────┐
+│ Literal                │ Count │ Locations                    │
+├────────────────────────┼───────┼──────────────────────────────┤
+│ "inventory-updated"    │ 7     │ OrderSvc.cs:44, …            │
+│ "FeatureFlag.NewUI"    │ 3     │ Startup.cs:91, …             │
+└────────────────────────┴───────┴──────────────────────────────┘
+```
+
+---
+
+### 4.3 Commit-Churn & Staleness Scanner (`scan-churn`)
+
+**Goal:** Identify hotspots (high churn → higher defect probability) and stale zones (no recent commits → knowledge rot risk).
+
+#### Data collection
+
+```csharp
+// Pseudocode — LibGit2Sharp walk
+foreach (var commit in repo.Commits.QueryBy(filter))
+{
+    foreach (var change in commit.Parents.First().Diff(commit))
+    {
+        Record(change.Path, commit.Author.When, commit.Sha,
+               change.LinesAdded, change.LinesDeleted);
+    }
+}
+```
+
+#### Metrics computed per file
+
+| Metric | Definition |
+|---|---|
+| `TotalCommits` | Count of commits touching file in window |
+| `UniqueAuthors` | Distinct committer count |
+| `ChurnScore` | `TotalCommits × log(LinesAdded + LinesDeleted + 1)` — weighs both frequency and magnitude |
+| `LastTouchDate` | Most recent commit date |
+| `StaleDays` | `Now - LastTouchDate` |
+| `OwnershipConcentration` | Gini coefficient of per-author commit share (1.0 = single owner) |
+
+#### Staleness noise filter
+
+The following are **excluded by default** from staleness reporting (configurable via `churn-rules.yaml`):
+
+```yaml
+staleness_exclude_patterns:
+  # Documentation
+  - "**/*.md"
+  - "**/LICENSE*"
+  - "**/NOTICE*"
+  # IDE / build artifacts
+  - "**/.vs/**"
+  - "**/*.suo"
+  - "**/*.user"
+  - "**/*.vspscc"
+  - "**/launchSettings.json"
+  # Generated code
+  - "**/obj/**"
+  - "**/bin/**"
+  - "**/*.designer.cs"
+  - "**/*.g.cs"
+  - "**/*.generated.*"
+  # Package manifests (rarely meaningful churn)
+  - "**/packages.lock.json"
+  - "**/yarn.lock"
+  - "**/package-lock.json"
+  # EV2 generated output
+  - "**/RolloutSpec.generated.json"
+```
+
+Files that match these globs are still scanned for *churn* (hotspot) purposes but are **suppressed in staleness reports** to avoid noise.
+
+#### Time-windowed analysis
+
+All churn queries accept a `--window` flag (default `180d`) so users can see "churn in the last 6 months" vs. "all-time."
+
+---
+
+### 4.4 Incident-Correlation Scanner (`scan-incidents`)
+
+**Goal:** Map which modules/services/files are most associated with production incidents.
+
+#### Data sources
+
+| Source | Integration Method |
+|---|---|
+| **ICM (Microsoft internal)** | ICM REST API or Kusto query export (CSV/JSON). Pull incidents by owning service tree node, extract `Title`, `OwningTeamId`, `ImpactedServices`, `RootCauseDescription`, `RepairItems[].CommitUrl`. |
+| **GitHub Issues / Incidents** | GitHub REST API: query issues with configurable labels (`incident`, `outage`, `sev1`, `sev2`). Extract linked PRs → changed files. |
+| **Azure DevOps Work Items** | ADO REST API: WIQL query for work items of type `Bug` or configurable types with tag filter. Follow linked changesets/commits → file paths. |
+
+#### Correlation algorithm
+
+```
+1. Ingest incident records → extract linked commit SHAs / PR numbers.
+2. For each commit SHA, resolve → set of changed file paths.
+3. Build an inverted index:  file_path → [incident_ids]
+4. Aggregate:
+     IncidentCount(file)   = |incidents linked to file|
+     SeverityWeight(file)  = Σ severity_weight(incident)
+                             where Sev0=10, Sev1=5, Sev2=2, Sev3=1
+     MTTR_Avg(file)        = avg time-to-mitigate for linked incidents
+5. Produce a ranked list of files/modules by SeverityWeight.
+```
+
+#### Module-level roll-up
+
+Files are rolled up into **modules** using configurable grouping rules:
+
+```yaml
+module_grouping:
+  strategy: "directory_depth"   # or "csproj", "cargo_toml", "setup_py"
+  depth: 2                      # group by first 2 path segments
+  overrides:
+    - pattern: "src/Shared/**"
+      module: "SharedLib"
+```
+
+---
+
+### 4.5 EV2 & ADO Deployment Artifact Scanner (`scan-deploy`)
+
+**Goal:** Lint Microsoft EV2 rollout artifacts and ADO pipeline definitions for reliability anti-patterns.
+
+#### EV2 checks
+
+| Rule ID | Description |
+|---|---|
+| `EV2-001` | `ServiceModel.json` contains hardcoded region names instead of `${{ parameters.region }}` or scope bindings |
+| `EV2-002` | `RolloutSpec.json` specifies `"WaitDuration": "PT0S"` (no bake time between regions) |
+| `EV2-003` | Health check `extensionName` references a nonexistent extension in the `ServiceModel` |
+| `EV2-004` | `ScopeBindings.json` maps fewer than 2 regions (single-region deployment = no failover) |
+| `EV2-005` | Shell/PowerShell extensions embed secrets rather than referencing Key Vault `SecretUri` |
+| `EV2-006` | `RolloutSpec` `OrchestratedSteps` lack a `HealthCheck` step after `Deploy` |
+
+#### ADO Pipeline checks
+
+| Rule ID | Description |
+|---|---|
+| `ADO-001` | `azure-pipelines.yml` uses `script:` inline with hardcoded connection strings or tokens |
+| `ADO-002` | No stage-gate / approval gate between `Build` and `Production` stages |
+| `ADO-003` | Pipeline variable group references are empty or point to nonexistent library |
+| `ADO-004` | No `condition: and(succeeded(), …)` on production deployment stage (always-runs) |
+| `ADO-005` | Pipeline uses `latest` tag for container images instead of pinned SHA/version |
+
+---
+
+## 5. Rule Configuration System
+
+### 5.1 File structure
+
+```
+.reliabilityiq/
+├── config.yaml              # Global settings (DB path, log level, window)
+├── rules/
+│   ├── portability.yaml     # Portability scanner rules
+│   ├── magic-strings.yaml   # Magic string scanner rules
+│   ├── churn.yaml           # Churn thresholds & excludes
+│   ├── incidents.yaml       # Incident source config & severity weights
+│   ├── deploy-ev2.yaml      # EV2 rules (enable/disable/severity)
+│   ├── deploy-ado.yaml      # ADO pipeline rules
+│   └── custom/
+│       └── team-rules.yaml  # Team-specific overrides
+└── allowlists/
+    ├── known-ips.yaml
+    ├── known-dns.yaml
+    └── known-strings.yaml
+```
+
+### 5.2 Rule schema (example: portability)
+
+```yaml
+# portability.yaml
+scanner: portability
+enabled: true
+
+rules:
+  - id: PORT-001
+    name: HardcodedIPv4
+    description: "Detects hardcoded IPv4 addresses in string literals."
+    severity: Warning          # Error | Warning | Info | None (disabled)
+    languages: [csharp, cpp, python, powershell, rust]
+    pattern: '\b(?:\d{1,3}\.){3}\d{1,3}\b'
+    match_context: string_literal
+    allowlist_ref: known-ips   # references allowlists/known-ips.yaml
+    exclude_paths:
+      - "**/Tests/**"
+      - "**/*.Test.cs"
+    settings:
+      suppress_loopback: true
+      suppress_rfc1918: false  # flag private range IPs by default
+
+  - id: PORT-002
+    name: HardcodedCloudDNS
+    severity: Error
+    languages: [csharp, cpp, python, powershell, rust, json, yaml]
+    dns_suffixes:
+      - ".blob.core.windows.net"
+      - ".vault.azure.net"
+      - ".servicebus.windows.net"
+      - ".database.windows.net"
+      - ".s3.amazonaws.com"
+      - ".storage.googleapis.com"
+    allowlist_ref: known-dns
+
+  # ... more rules
+```
+
+### 5.3 Merge order
+
+```
+Built-in defaults  ←  .reliabilityiq/rules/*.yaml  ←  custom/*.yaml  ←  CLI --override flags
+          (lowest precedence)                                    (highest precedence)
+```
+
+A rule can be **disabled** at any layer:
+
+```yaml
+overrides:
+  - id: PORT-001
+    severity: None   # effectively disables the rule
+```
+
+---
+
+## 6. Data Model (SQLite)
+
+```sql
+-- Core tables
+CREATE TABLE scan_runs (
+    id            TEXT PRIMARY KEY,  -- ULID
+    started_at    TEXT NOT NULL,
+    finished_at   TEXT,
+    repo_root     TEXT NOT NULL,
+    commit_sha    TEXT,
+    branch        TEXT,
+    config_hash   TEXT               -- SHA256 of merged config
+);
+
+CREATE TABLE findings (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id        TEXT NOT NULL REFERENCES scan_runs(id),
+    scanner       TEXT NOT NULL,     -- portability | magic_string | churn | incident | deploy
+    rule_id       TEXT NOT NULL,     -- PORT-001, MAGIC-003, etc.
+    file_path     TEXT NOT NULL,
+    line_start    INTEGER,
+    line_end      INTEGER,
+    column_start  INTEGER,
+    column_end    INTEGER,
+    severity      TEXT NOT NULL,     -- Error | Warning | Info
+    message       TEXT NOT NULL,
+    snippet       TEXT,              -- ±2 lines of context
+    confidence    INTEGER,           -- 0-100
+    metadata      TEXT               -- JSON blob for scanner-specific data
+);
+
+CREATE TABLE churn_stats (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id          TEXT NOT NULL REFERENCES scan_runs(id),
+    file_path       TEXT NOT NULL,
+    total_commits   INTEGER,
+    unique_authors  INTEGER,
+    lines_added     INTEGER,
+    lines_deleted   INTEGER,
+    churn_score     REAL,
+    last_touch_date TEXT,
+    stale_days      INTEGER,
+    ownership_gini  REAL
+);
+
+CREATE TABLE incident_map (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id          TEXT NOT NULL REFERENCES scan_runs(id),
+    file_path       TEXT NOT NULL,
+    module          TEXT,
+    incident_id     TEXT NOT NULL,
+    incident_source TEXT NOT NULL,   -- icm | github | ado
+    severity        INTEGER,
+    title           TEXT,
+    resolved_at     TEXT,
+    ttm_minutes     INTEGER          -- time to mitigate
+);
+
+CREATE TABLE modules (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id          TEXT NOT NULL REFERENCES scan_runs(id),
+    module_name     TEXT NOT NULL,
+    incident_count  INTEGER,
+    severity_weight REAL,
+    avg_ttm         REAL,
+    churn_p90       REAL,
+    finding_count   INTEGER
+);
+
+-- Indexes
+CREATE INDEX idx_findings_run    ON findings(run_id, scanner);
+CREATE INDEX idx_findings_file   ON findings(file_path);
+CREATE INDEX idx_churn_run       ON churn_stats(run_id);
+CREATE INDEX idx_incident_file   ON incident_map(file_path);
+```
+
+---
+
+## 7. CLI Design
+
+### 7.1 Command tree
+
+```
+reliabilityiq
+├── scan
+│   ├── all              # Run all enabled scanners
+│   ├── portability      # Portability scanner only
+│   ├── magic-strings    # Magic string scanner only
+│   ├── churn            # Commit churn/staleness only
+│   ├── incidents        # Incident correlation only
+│   └── deploy           # EV2/ADO artifact scanner only
+├── report
+│   ├── table            # Print CLI table of findings
+│   ├── heatmap          # Print ASCII heatmap (directory tree)
+│   └── export           # Export to CSV / JSON / SARIF
+├── rules
+│   ├── list             # Show all loaded rules + effective severity
+│   ├── validate         # Validate rule YAML files
+│   └── init             # Scaffold default .reliabilityiq/ folder
+├── server
+│   └── start            # Launch ASP.NET dashboard (--port, --db)
+└── version
+```
+
+### 7.2 Example invocations
+
+```bash
+# Full scan with default config
+reliabilityiq scan all --repo ./src --db results.db
+
+# Portability only, CI mode (non-zero exit on Error findings)
+reliabilityiq scan portability --repo ./src --db results.db --fail-on error
+
+# Churn with 90-day window
+reliabilityiq scan churn --repo ./src --db results.db --window 90d
+
+# Incidents from ICM Kusto export
+reliabilityiq scan incidents --repo ./src --db results.db \
+    --icm-export incidents.csv
+
+# View results
+reliabilityiq report table --db results.db --scanner portability --severity warning
+reliabilityiq report heatmap --db results.db --metric churn_score
+
+# Launch web UI
+reliabilityiq server start --db results.db --port 5100
+```
+
+### 7.3 Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | Success, no findings above `--fail-on` threshold |
+| `1` | Findings at or above `--fail-on` severity found |
+| `2` | Configuration or runtime error |
+
+---
+
+## 8. Web Dashboard (ASP.NET Razor Pages)
+
+### 8.1 Pages
+
+| Route | View |
+|---|---|
+| `/` | **Dashboard**: summary cards (total findings by severity, top-5 hottest files, stalest modules, most-incident-prone modules). |
+| `/findings` | **Findings Table**: filterable/sortable DataTable. Filters: scanner, severity, rule, file-path glob, confidence range. |
+| `/heatmap` | **Heatmap**: interactive treemap (D3.js) where tile size = file size (LOC), colour = composite risk score. Click tile → drill to findings. |
+| `/churn` | **Churn view**: scatter plot (X = churn score, Y = finding count). Files in upper-right quadrant = highest risk. |
+| `/incidents` | **Incident map**: module-level bar chart of severity-weighted incident counts. Expandable to file-level. |
+| `/history` | **Trend**: line chart comparing scan runs over time (requires multiple scan_runs). |
+| `/rules` | **Rule browser**: lists all loaded rules, their current severity, hit counts. |
+
+### 8.2 Stack
+
+- **Backend**: ASP.NET Razor Pages, reads SQLite via Dapper (read-only connection string).
+- **Frontend**: Minimal JS — `D3.js` for the heatmap/treemap, `Chart.js` for bar/line/scatter charts, `DataTables.js` for the findings table.
+- **No build pipeline**: All JS via CDN or vendored; no Webpack/Node required.
+
+### 8.3 Composite risk score (for heatmap colouring)
+
+```
+RiskScore(file) =
+    0.30 × normalize(churn_score)
+  + 0.25 × normalize(finding_count_weighted_by_severity)
+  + 0.25 × normalize(incident_severity_weight)
+  + 0.10 × normalize(ownership_concentration)
+  + 0.10 × normalize(staleness_score)
+```
+
+Weights are configurable in `config.yaml`. Normalisation is min-max across the scanned corpus.
+
+---
+
+## 9. Scanner Pipeline Architecture
+
+```
+                       ┌──────────────────────┐
+                       │   CLI arg parsing     │
+                       └─────────┬────────────┘
+                                 │
+                       ┌─────────▼────────────┐
+                       │  Config loader        │
+                       │  (merge YAML chain)   │
+                       └─────────┬────────────┘
+                                 │
+                       ┌─────────▼────────────┐
+                       │  File enumerator      │
+                       │  (respects .gitignore │
+                       │   + exclude_paths)    │
+                       └─────────┬────────────┘
+                                 │
+               ┌─────────────────┼─────────────────┐
+               │                 │                  │
+        ┌──────▼──────┐  ┌──────▼──────┐   ┌──────▼───────┐
+        │  Roslyn      │  │ Tree-sitter │   │ JSON / YAML  │
+        │  Pipeline    │  │ Pipeline    │   │ Pipeline     │
+        │  (.cs)       │  │ (.cpp/.py/  │   │ (EV2, ADO,   │
+        │              │  │  .ps1/.rs)  │   │  config)     │
+        └──────┬──────┘  └──────┬──────┘   └──────┬───────┘
+               │                 │                  │
+               └────────┬────────┘─────────────────┘
+                        │
+               ┌────────▼────────┐
+               │  Rule Evaluator │  ← receives AST node + rule config
+               │  (pattern match,│    returns Finding | null
+               │   allowlist,    │
+               │   confidence)   │
+               └────────┬────────┘
+                        │
+               ┌────────▼────────┐
+               │  Finding         │
+               │  Deduplicator /  │
+               │  Aggregator      │
+               └────────┬────────┘
+                        │
+               ┌────────▼────────┐
+               │  SQLite Writer   │
+               │  (bulk insert    │
+               │   per 1000 rows) │
+               └──────────────────┘
+```
+
+### Parallelism strategy
+
+- File enumeration produces a `Channel<FileWork>`.
+- *N* worker tasks (default `Environment.ProcessorCount`) consume items.
+- Each worker owns its own Tree-sitter parser instance (parsers are not thread-safe).
+- Roslyn `AdhocWorkspace` is created per file (stateless analysis — no full solution load required).
+- SQLite writes are serialised through a single writer task consuming a `Channel<FindingBatch>`.
+
+---
+
+## 10. EV2 & ADO Artifact Deep-Dive
+
+### 10.1 EV2 file discovery
+
+```
+/ev2/
+├── ServiceModel.json
+├── ScopeBindings.json
+├── RolloutSpec.*.json
+├── bin/
+│   ├── Deploy.ps1
+│   └── HealthCheck.ps1
+└── Parameters/
+    ├── prod.eastus2.json
+    └── prod.westus3.json
+```
+
+The scanner auto-discovers EV2 artifacts by looking for `ServiceModel.json` and walking siblings. It validates:
+
+1. **Structural correctness** (JSON schema validation against known EV2 schemas).
+2. **Parameterisation completeness** — every environment-specific value in `Parameters/` must be tokenised in the corresponding spec.
+3. **Region coverage** — compare `ScopeBindings` region list against a configurable "expected regions" set.
+
+### 10.2 ADO pipeline discovery
+
+Looks for `azure-pipelines.yml`, `.azure-pipelines/**/*.yml`, and `build/**/*.yml`. Parses YAML and checks:
+
+1. Stage dependency graph for missing approval gates.
+2. Variable references that resolve to `$(secretValue)` without variable-group linkage.
+3. Use of `checkout: self` with `fetchDepth: 0` in large repos (perf anti-pattern).
+
+---
+
+## 11. Suggested Additional Scanners (Freestyle)
+
+Beyond the core scanners, the following scan types are **strongly complementary** to the stated goals:
+
+| Scanner | What it does | Why it matters |
+|---|---|---|
+| **Dependency Freshness** (`scan-deps`) | Parses `*.csproj`, `Cargo.toml`, `requirements.txt`, `package.json` and checks package ages / known CVEs against OSV / GitHub Advisory DB. | Stale dependencies correlate with both security and reliability risk; a package 3+ major versions behind is a deployment landmine. |
+| **Configuration Drift** (`scan-config-drift`) | Compares environment-specific config files (e.g., `appsettings.Production.json` vs `appsettings.Staging.json`) and flags keys that exist in one but not the other. | Missing config keys are a top cause of deployment failures in cross-cloud / multi-environment setups. |
+| **Error Handling Coverage** (`scan-error-handling`) | Walks call graphs for I/O, network, and serialization operations and flags uncaught / bare-catch patterns (`catch (Exception)`, Python `except:`, Rust `unwrap()` in non-test code). | Swallowed or generic exceptions hide failures and increase MTTR. |
+| **Secrets / Credential Leak** (`scan-secrets`) | Entropy analysis + regex patterns for API keys, SAS tokens, JWTs, PFX passwords in source. Complements but does not replace tools like CredScan. | Hardcoded secrets block cloud portability (different vaults per cloud) and are an operational risk. |
+| **Circular Dependency Detection** (`scan-cycles`) | For C# (project references), Python (imports), Rust (crate deps): build a directed graph and detect cycles. | Circular dependencies complicate independent deployability and increase blast radius during incidents. |
+| **Feature-Flag Hygiene** (`scan-feature-flags`) | Identifies feature-flag checks (configurable SDK call patterns: `IFeatureManager.IsEnabled`, LaunchDarkly, etc.) and correlates with flag management data to find flags that have been fully rolled out but not cleaned up. | Dead flags accumulate as magic strings and create branching complexity that degrades maintainability. |
+| **Logging & Telemetry Coverage** (`scan-observability`) | Checks that public/entry-point methods in service layers contain at least one structured-log or telemetry call. Flags "dark" code paths with no observability instrumentation. | Unobservable code extends MTTR; cross-cloud deployments need consistent instrumentation across environments. |
+| **Retry & Timeout Policy** (`scan-resilience`) | Detects HTTP clients, DB connections, and message bus calls that lack retry/timeout configuration (Polly policies in C#, `tenacity` in Python, etc.). | Missing resilience policies are the #1 cause of cascading failures in distributed systems, especially when moving between clouds with different latency profiles. |
+| **Thread Safety / Async Anti-patterns** (`scan-concurrency`) | Flags `.Result` / `.Wait()` on Tasks in async contexts (C#), `asyncio.run()` inside already-running loops (Python), and `block_on` in async Rust. | Sync-over-async deadlocks are a leading cause of production hangs that surface as incidents. |
+
+---

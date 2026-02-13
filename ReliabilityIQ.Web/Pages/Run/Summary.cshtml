@@ -1,0 +1,123 @@
+@page "/run/{runId}/summary"
+@model ReliabilityIQ.Web.Pages.Run.SummaryModel
+@{
+    ViewData["Title"] = "Run Summary";
+}
+
+@if (Model.Run is null)
+{
+    <div class="alert alert-warning" role="alert">Run not found.</div>
+}
+else
+{
+    <section class="mb-3">
+        <h1 class="h3 mb-1">Run Summary</h1>
+        <div class="small text-body-secondary">
+            <span class="font-monospace">@Model.Run.RunId</span>
+            <span class="mx-2">|</span>
+            <span class="font-monospace">@Model.Run.RepoRoot</span>
+        </div>
+    </section>
+
+    <div class="row g-3 mb-4">
+        <div class="col-12 col-md-3">
+            <div class="card summary-card border-danger-subtle">
+                <div class="card-body">
+                    <div class="text-body-secondary small">Errors</div>
+                    <div class="display-6 text-danger">@Model.Run.ErrorCount</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-12 col-md-3">
+            <div class="card summary-card border-warning-subtle">
+                <div class="card-body">
+                    <div class="text-body-secondary small">Warnings</div>
+                    <div class="display-6 text-warning-emphasis">@Model.Run.WarningCount</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-12 col-md-3">
+            <div class="card summary-card border-info-subtle">
+                <div class="card-body">
+                    <div class="text-body-secondary small">Info</div>
+                    <div class="display-6 text-info-emphasis">@Model.Run.InfoCount</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-12 col-md-3">
+            <div class="card summary-card border-secondary-subtle">
+                <div class="card-body">
+                    <div class="text-body-secondary small">Total</div>
+                    <div class="display-6">@Model.Run.TotalFindings</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="row g-3">
+        <div class="col-12 col-lg-6">
+            <div class="card h-100">
+                <div class="card-body">
+                    <h2 class="h6 text-uppercase text-body-secondary">Findings by Rule</h2>
+                    @if (Model.RuleSummary.Count == 0)
+                    {
+                        <p class="text-body-secondary mb-0">No findings for this run.</p>
+                    }
+                    else
+                    {
+                        var maxCount = Math.Max(1, Model.RuleSummary.Max(item => item.FindingCount));
+                        <div class="vstack gap-2">
+                            @foreach (var rule in Model.RuleSummary)
+                            {
+                                var width = (int)Math.Round((double)rule.FindingCount / maxCount * 100);
+                                <div>
+                                    <div class="d-flex justify-content-between small mb-1">
+                                        <span class="font-monospace">@rule.RuleId</span>
+                                        <span>@rule.FindingCount</span>
+                                    </div>
+                                    <div class="progress" role="progressbar" aria-label="@rule.RuleId" aria-valuenow="@width" aria-valuemin="0" aria-valuemax="100">
+                                        <div class="progress-bar" style="width: @width%"></div>
+                                    </div>
+                                </div>
+                            }
+                        </div>
+                    }
+                </div>
+            </div>
+        </div>
+
+        <div class="col-12 col-lg-6">
+            <div class="card h-100">
+                <div class="card-body">
+                    <h2 class="h6 text-uppercase text-body-secondary">Top 10 Files by Findings</h2>
+                    @if (Model.TopFiles.Count == 0)
+                    {
+                        <p class="text-body-secondary mb-0">No findings for this run.</p>
+                    }
+                    else
+                    {
+                        <div class="table-responsive">
+                            <table class="table table-sm align-middle mb-0">
+                                <thead>
+                                <tr>
+                                    <th>File</th>
+                                    <th>Count</th>
+                                </tr>
+                                </thead>
+                                <tbody>
+                                @foreach (var file in Model.TopFiles)
+                                {
+                                    <tr>
+                                        <td class="font-monospace small">@file.FilePath</td>
+                                        <td>@file.FindingCount</td>
+                                    </tr>
+                                }
+                                </tbody>
+                            </table>
+                        </div>
+                    }
+                </div>
+            </div>
+        </div>
+    </div>
+}

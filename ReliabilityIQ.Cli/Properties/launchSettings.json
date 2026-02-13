@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "ReliabilityIQ.Cli": {
+      "commandName": "Project",
+      "commandLineArgs": "scan portability --repo ./test-fixture"
+    }
+  }
+}

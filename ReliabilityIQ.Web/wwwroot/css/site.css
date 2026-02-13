@@ -1,0 +1,31 @@
+body {
+    min-height: 100vh;
+    background: linear-gradient(180deg, #f7f9fc 0%, #eef3fb 100%);
+}
+
+.font-monospace {
+    word-break: break-all;
+}
+
+.summary-card {
+    border-width: 1px;
+}
+
+#runSelector {
+    min-width: 20rem;
+}
+
+@media (max-width: 991px) {
+    #runSelector {
+        min-width: 100%;
+    }
+}
+
+td.details-toggle {
+    width: 3rem;
+}
+
+pre {
+    white-space: pre-wrap;
+    word-break: break-word;
+}

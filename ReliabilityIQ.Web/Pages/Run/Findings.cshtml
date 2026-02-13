@@ -1,0 +1,181 @@
+@page "/run/{runId}/findings"
+@model ReliabilityIQ.Web.Pages.Run.FindingsModel
+@{
+    ViewData["Title"] = "Findings";
+}
+
+@if (Model.Run is null)
+{
+    <div class="alert alert-warning" role="alert">Run not found.</div>
+}
+else
+{
+    <section class="mb-3">
+        <h1 class="h3 mb-1">Findings</h1>
+        <div class="small text-body-secondary">
+            <span class="font-monospace">@Model.Run.RunId</span>
+            <span class="mx-2">|</span>
+            <span>@Model.Run.TotalFindings total</span>
+            <span class="mx-2">|</span>
+            <span class="font-monospace">@Model.Run.RepoRoot</span>
+        </div>
+    </section>
+
+    <div class="row g-3">
+        <aside class="col-12 col-lg-3">
+            <div class="card">
+                <div class="card-body">
+                    <h2 class="h6 text-uppercase text-body-secondary">Filters</h2>
+
+                    <div class="mb-3">
+                        <label for="severityFilter" class="form-label">Severity</label>
+                        <select id="severityFilter" class="form-select form-select-sm">
+                            <option value="">All</option>
+                            <option value="Error">Error</option>
+                            <option value="Warning">Warning</option>
+                            <option value="Info">Info</option>
+                        </select>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="ruleFilter" class="form-label">Rule</label>
+                        <select id="ruleFilter" class="form-select form-select-sm">
+                            <option value="">All</option>
+                            @foreach (var rule in Model.RuleSummary)
+                            {
+                                <option value="@rule.RuleId">@rule.RuleId (@rule.FindingCount)</option>
+                            }
+                        </select>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="categoryFilter" class="form-label">File Category</label>
+                        <select id="categoryFilter" class="form-select form-select-sm">
+                            <option value="">All</option>
+                            @foreach (var category in Model.FileCategories)
+                            {
+                                <option value="@category">@category</option>
+                            }
+                        </select>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="languageFilter" class="form-label">Language</label>
+                        <select id="languageFilter" class="form-select form-select-sm">
+                            <option value="">All</option>
+                            @foreach (var language in Model.Languages)
+                            {
+                                <option value="@language">@language</option>
+                            }
+                        </select>
+                    </div>
+
+                    <div class="mb-3">
+                        <label for="pathPrefixFilter" class="form-label">Path Prefix</label>
+                        <input id="pathPrefixFilter" class="form-control form-control-sm font-monospace" type="text" placeholder="src/" />
+                    </div>
+
+                    <button id="applyFilters" type="button" class="btn btn-sm btn-primary w-100">Apply Filters</button>
+                </div>
+            </div>
+        </aside>
+
+        <div class="col-12 col-lg-9">
+            <div class="table-responsive">
+                <table id="findingsTable" class="table table-striped table-hover align-middle w-100">
+                    <thead>
+                    <tr>
+                        <th></th>
+                        <th>Severity</th>
+                        <th>Rule ID</th>
+                        <th>File Path</th>
+                        <th>Line</th>
+                        <th>Message</th>
+                        <th>Confidence</th>
+                    </tr>
+                    </thead>
+                </table>
+            </div>
+        </div>
+    </div>
+}
+
+@section Scripts
+{
+    <script>
+        function severityBadge(severity) {
+            if (severity === "Error") return '<span class="badge text-bg-danger">Error</span>';
+            if (severity === "Warning") return '<span class="badge text-bg-warning text-dark">Warning</span>';
+            return '<span class="badge text-bg-info text-dark">Info</span>';
+        }
+
+        const runId = "@Model.RunId";
+        const table = new DataTable("#findingsTable", {
+            serverSide: true,
+            processing: true,
+            pageLength: 25,
+            order: [[1, "asc"]],
+            ajax: {
+                url: `/api/run/${encodeURIComponent(runId)}/findings`,
+                data: function (d) {
+                    d.severity = document.getElementById("severityFilter").value;
+                    d.rule = document.getElementById("ruleFilter").value;
+                    d.fileCategory = document.getElementById("categoryFilter").value;
+                    d.language = document.getElementById("languageFilter").value;
+                    d.pathPrefix = document.getElementById("pathPrefixFilter").value;
+                }
+            },
+            columns: [
+                {
+                    data: null,
+                    name: "expand",
+                    orderable: false,
+                    className: "details-toggle",
+                    defaultContent: '<button class="btn btn-sm btn-outline-secondary" type="button">+</button>'
+                },
+                {
+                    data: "severity",
+                    name: "severity",
+                    render: function (data) { return severityBadge(data); }
+                },
+                { data: "ruleId", name: "ruleId", className: "font-monospace small" },
+                { data: "filePath", name: "filePath", className: "font-monospace small" },
+                { data: "line", name: "line" },
+                { data: "message", name: "message" },
+                { data: "confidence", name: "confidence" }
+            ]
+        });
+
+        document.getElementById("applyFilters").addEventListener("click", function () {
+            table.ajax.reload();
+        });
+
+        document.getElementById("findingsTable").addEventListener("click", function (event) {
+            const button = event.target.closest("button");
+            if (!button) {
+                return;
+            }
+
+            const rowElement = button.closest("tr");
+            const row = table.row(rowElement);
+            if (row.child.isShown()) {
+                row.child.hide();
+                button.textContent = "+";
+                return;
+            }
+
+            const data = row.data();
+            const snippet = data.snippet ? `<pre class="mb-2 small">${data.snippet}</pre>` : "<p class=\"mb-2 small text-body-secondary\">No snippet captured.</p>";
+            const details = `
+                <div class="p-2">
+                    <div class="small text-body-secondary mb-1">Full Message</div>
+                    <div class="mb-2">${data.message}</div>
+                    <div class="small text-body-secondary mb-1">Snippet</div>
+                    ${snippet}
+                </div>`;
+
+            row.child(details).show();
+            button.textContent = "-";
+        });
+    </script>
+}

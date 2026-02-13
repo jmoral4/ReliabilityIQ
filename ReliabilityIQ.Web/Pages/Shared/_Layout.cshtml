@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>@ViewData["Title"] - ReliabilityIQ</title>
+    <link
+        href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
+        rel="stylesheet"
+        integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH"
+        crossorigin="anonymous" />
+    <link
+        href="https://cdn.datatables.net/2.1.8/css/dataTables.bootstrap5.min.css"
+        rel="stylesheet" />
+    <link rel="stylesheet" href="~/css/site.css" asp-append-version="true" />
+</head>
+<body>
+<header class="border-bottom shadow-sm">
+    <nav class="navbar navbar-expand-lg bg-body-tertiary">
+        <div class="container-fluid">
+            <a class="navbar-brand fw-semibold" asp-page="/Index">ReliabilityIQ</a>
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#appNav" aria-controls="appNav" aria-expanded="false" aria-label="Toggle navigation">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <div class="collapse navbar-collapse" id="appNav">
+                <ul class="navbar-nav me-auto mb-2 mb-lg-0">
+                    <li class="nav-item"><a id="runsNav" class="nav-link" asp-page="/Index">Runs</a></li>
+                    <li class="nav-item"><a id="findingsNav" class="nav-link" href="#">Findings</a></li>
+                    <li class="nav-item"><a id="summaryNav" class="nav-link" href="#">Summary</a></li>
+                </ul>
+                <form class="d-flex align-items-center gap-2" role="search">
+                    <label for="runSelector" class="form-label mb-0 small text-body-secondary">Run</label>
+                    <select id="runSelector" class="form-select form-select-sm"></select>
+                </form>
+            </div>
+        </div>
+    </nav>
+</header>
+
+<main class="container-fluid px-3 px-md-4 py-4">
+    @RenderBody()
+</main>
+
+<script
+    src="https://code.jquery.com/jquery-3.7.1.min.js"
+    integrity="sha256-/JqT3SQfawRcv/BIHPThkBvs0OEvtFFmqPF/lYI/Cxo="
+    crossorigin="anonymous"></script>
+<script
+    src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"
+    integrity="sha384-YvpcrYf0tY3lHB60NNkmXc5s9fDVZLESaAA55NDzOxhy9GkcIdslK1eN7N6jIeHz"
+    crossorigin="anonymous"></script>
+<script src="https://cdn.datatables.net/2.1.8/js/dataTables.min.js"></script>
+<script src="https://cdn.datatables.net/2.1.8/js/dataTables.bootstrap5.min.js"></script>
+<script>
+    (async function () {
+        const runSelector = document.getElementById("runSelector");
+        const findingsNav = document.getElementById("findingsNav");
+        const summaryNav = document.getElementById("summaryNav");
+        const runsNav = document.getElementById("runsNav");
+        const path = window.location.pathname;
+
+        function setActiveNav() {
+            runsNav.classList.toggle("active", path === "/");
+            findingsNav.classList.toggle("active", /\/run\/[^/]+\/findings$/i.test(path));
+            summaryNav.classList.toggle("active", /\/run\/[^/]+\/summary$/i.test(path));
+        }
+
+        function getRunIdFromPath() {
+            const match = path.match(/\/run\/([^/]+)\//i);
+            return match ? decodeURIComponent(match[1]) : null;
+        }
+
+        function updateRunLinks(runId) {
+            if (!runId) {
+                findingsNav.setAttribute("href", "#");
+                summaryNav.setAttribute("href", "#");
+                return;
+            }
+
+            const encoded = encodeURIComponent(runId);
+            findingsNav.setAttribute("href", `/run/${encoded}/findings`);
+            summaryNav.setAttribute("href", `/run/${encoded}/summary`);
+        }
+
+        function routeToCurrentPageWithRun(runId) {
+            const encoded = encodeURIComponent(runId);
+            if (/\/run\/[^/]+\/findings$/i.test(path)) {
+                window.location.href = `/run/${encoded}/findings`;
+                return;
+            }
+
+            if (/\/run\/[^/]+\/summary$/i.test(path)) {
+                window.location.href = `/run/${encoded}/summary`;
+                return;
+            }
+
+            window.location.href = `/run/${encoded}/findings`;
+        }
+
+        setActiveNav();
+
+        const currentRunFromViewData = "@(ViewData["CurrentRunId"]?.ToString() ?? string.Empty)";
+
+        const response = await fetch("/api/runs", { headers: { "Accept": "application/json" } });
+        if (!response.ok) {
+            runSelector.innerHTML = '<option value="">No runs</option>';
+            runSelector.disabled = true;
+            updateRunLinks(null);
+            return;
+        }
+
+        const runs = await response.json();
+        if (!Array.isArray(runs) || runs.length === 0) {
+            runSelector.innerHTML = '<option value="">No runs</option>';
+            runSelector.disabled = true;
+            updateRunLinks(null);
+            return;
+        }
+
+        runSelector.innerHTML = "";
+        for (const run of runs) {
+            const option = document.createElement("option");
+            option.value = run.runId;
+            option.textContent = run.label;
+            runSelector.appendChild(option);
+        }
+
+        const runIdFromPath = getRunIdFromPath();
+        const savedRun = localStorage.getItem("riq.selectedRunId");
+        const selectedRun = currentRunFromViewData || runIdFromPath || savedRun || runs[0].runId;
+        if (selectedRun) {
+            runSelector.value = selectedRun;
+            localStorage.setItem("riq.selectedRunId", selectedRun);
+            updateRunLinks(selectedRun);
+        }
+
+        runSelector.addEventListener("change", function () {
+            const runId = runSelector.value;
+            localStorage.setItem("riq.selectedRunId", runId);
+            updateRunLinks(runId);
+            routeToCurrentPageWithRun(runId);
+        });
+    })();
+</script>
+@await RenderSectionAsync("Scripts", required: false)
+</body>
+</html>
