@@ -1,0 +1,295 @@
+@page "/run/{runId}/deploy"
+@model ReliabilityIQ.Web.Pages.Run.DeployModel
+@{
+    ViewData["Title"] = "Deploy Findings";
+}
+
+@if (Model.Run is null)
+{
+    <div class="alert alert-warning" role="alert">Run not found.</div>
+}
+else
+{
+    <section class="mb-3">
+        <h1 class="h3 mb-1">Deploy Findings</h1>
+        <div class="small text-body-secondary">
+            <span class="font-monospace">@Model.Run.RunId</span>
+            <span class="mx-2">|</span>
+            <span class="font-monospace">@Model.Run.RepoRoot</span>
+            <span class="mx-2">|</span>
+            <a asp-page="/Run/Findings" asp-route-runId="@Model.RunId" asp-route-rulePrefix="deploy." class="link-secondary">Open in Findings</a>
+        </div>
+    </section>
+
+    <div class="row g-3 mb-3">
+        <div class="col-12 col-lg-4">
+            <div class="card h-100 border-danger-subtle">
+                <div class="card-body">
+                    <h2 class="h6 text-uppercase text-body-secondary mb-2">EV2 Findings</h2>
+                    <div class="d-flex gap-2 flex-wrap mb-2">
+                        <span class="badge text-bg-danger">Error @Model.Ev2Summary.ErrorCount</span>
+                        <span class="badge text-bg-warning text-dark">Warning @Model.Ev2Summary.WarningCount</span>
+                        <span class="badge text-bg-info text-dark">Info @Model.Ev2Summary.InfoCount</span>
+                    </div>
+                    <div class="small text-body-secondary">Total: @Model.Ev2Summary.TotalCount</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-12 col-lg-4">
+            <div class="card h-100 border-warning-subtle">
+                <div class="card-body">
+                    <h2 class="h6 text-uppercase text-body-secondary mb-2">ADO Findings</h2>
+                    <div class="d-flex gap-2 flex-wrap mb-2">
+                        <span class="badge text-bg-danger">Error @Model.AdoSummary.ErrorCount</span>
+                        <span class="badge text-bg-warning text-dark">Warning @Model.AdoSummary.WarningCount</span>
+                        <span class="badge text-bg-info text-dark">Info @Model.AdoSummary.InfoCount</span>
+                    </div>
+                    <div class="small text-body-secondary">Total: @Model.AdoSummary.TotalCount</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-12 col-lg-4">
+            <div class="card h-100 border-primary-subtle">
+                <div class="card-body">
+                    <h2 class="h6 text-uppercase text-body-secondary mb-2">Parameterization Opportunities</h2>
+                    <div class="display-6 text-primary-emphasis">@Model.ParameterizationOpportunities</div>
+                    <div class="small text-body-secondary">Hardcoded deployment values eligible for parameterization.</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="card mb-3">
+        <div class="card-body">
+            <h2 class="h6 text-uppercase text-body-secondary">Top 5 Riskiest Deployment Artifacts</h2>
+            @if (Model.TopRiskyArtifacts.Count == 0)
+            {
+                <p class="text-body-secondary mb-0">No deployment artifacts with findings for this run.</p>
+            }
+            else
+            {
+                <div class="table-responsive">
+                    <table class="table table-sm align-middle mb-0">
+                        <thead>
+                        <tr>
+                            <th>Artifact</th>
+                            <th>Type</th>
+                            <th>Errors</th>
+                            <th>Warnings</th>
+                            <th>Info</th>
+                            <th>Risk Score</th>
+                        </tr>
+                        </thead>
+                        <tbody>
+                        @foreach (var artifact in Model.TopRiskyArtifacts)
+                        {
+                            <tr>
+                                <td class="font-monospace small">
+                                    <a asp-page="/Run/File" asp-route-runId="@Model.RunId" asp-route-fileId="@artifact.FileId" class="link-dark">@artifact.FilePath</a>
+                                </td>
+                                <td>@artifact.ArtifactType</td>
+                                <td>@artifact.ErrorCount</td>
+                                <td>@artifact.WarningCount</td>
+                                <td>@artifact.InfoCount</td>
+                                <td>@artifact.RiskScore.ToString("0.##")</td>
+                            </tr>
+                        }
+                        </tbody>
+                    </table>
+                </div>
+            }
+        </div>
+    </div>
+
+    <div class="row g-3">
+        <aside class="col-12 col-lg-3">
+            <div class="card">
+                <div class="card-body">
+                    <h2 class="h6 text-uppercase text-body-secondary">Filters</h2>
+                    <div class="mb-3">
+                        <label for="artifactTypeFilter" class="form-label">Artifact Type</label>
+                        <select id="artifactTypeFilter" class="form-select form-select-sm">
+                            <option value="">All</option>
+                            <option value="EV2">EV2</option>
+                            <option value="ADO">ADO</option>
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label for="subcategoryFilter" class="form-label">Rule Subcategory</label>
+                        <select id="subcategoryFilter" class="form-select form-select-sm">
+                            <option value="">All</option>
+                            <option value="hardcoded-values">hardcoded values</option>
+                            <option value="missing-safety">missing safety</option>
+                            <option value="inline-secrets">inline secrets</option>
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label for="severityFilter" class="form-label">Severity</label>
+                        <select id="severityFilter" class="form-select form-select-sm">
+                            <option value="">All</option>
+                            <option value="Error">Error</option>
+                            <option value="Warning">Warning</option>
+                            <option value="Info">Info</option>
+                        </select>
+                    </div>
+                    <button id="applyDeployFilters" type="button" class="btn btn-sm btn-primary w-100">Apply Filters</button>
+                </div>
+            </div>
+        </aside>
+
+        <div class="col-12 col-lg-9">
+            <div class="table-responsive">
+                <table id="deployFindingsTable" class="table table-striped table-hover align-middle w-100">
+                    <thead>
+                    <tr>
+                        <th></th>
+                        <th>Artifact Type</th>
+                        <th>Severity</th>
+                        <th>Rule</th>
+                        <th>Artifact File</th>
+                        <th>Location</th>
+                        <th>Message</th>
+                        <th>Remediation</th>
+                    </tr>
+                    </thead>
+                </table>
+            </div>
+        </div>
+    </div>
+}
+
+@section Scripts
+{
+    <script>
+        function escapeHtml(value) {
+            if (!value) return "";
+            return String(value)
+                .replaceAll("&", "&amp;")
+                .replaceAll("<", "&lt;")
+                .replaceAll(">", "&gt;")
+                .replaceAll('"', "&quot;")
+                .replaceAll("'", "&#39;");
+        }
+
+        function severityBadge(severity) {
+            if (severity === "Error") return '<span class="badge text-bg-danger">Error</span>';
+            if (severity === "Warning") return '<span class="badge text-bg-warning text-dark">Warning</span>';
+            return '<span class="badge text-bg-info text-dark">Info</span>';
+        }
+
+        function parseMetadata(metadata) {
+            if (!metadata) return {};
+            try { return JSON.parse(metadata); } catch { return {}; }
+        }
+
+        function formatGroupRows(table) {
+            let lastType = null;
+            table.rows({ page: "current" }).every(function () {
+                const data = this.data();
+                const type = data.artifactType || "Unknown";
+                const rowNode = this.node();
+                if (type !== lastType) {
+                    const groupRow = document.createElement("tr");
+                    groupRow.className = "table-group-row";
+                    groupRow.innerHTML = `<td colspan="8" class="small fw-semibold text-body-secondary">${escapeHtml(type)} Artifacts</td>`;
+                    rowNode.parentNode.insertBefore(groupRow, rowNode);
+                    lastType = type;
+                }
+            });
+        }
+
+        (function () {
+            const runId = "@Model.RunId";
+            const table = new DataTable("#deployFindingsTable", {
+                serverSide: true,
+                processing: true,
+                pageLength: 25,
+                order: [[1, "asc"], [2, "asc"]],
+                ajax: {
+                    url: `/api/run/${encodeURIComponent(runId)}/deploy`,
+                    data: function (d) {
+                        d.artifactType = document.getElementById("artifactTypeFilter").value;
+                        d.subcategory = document.getElementById("subcategoryFilter").value;
+                        d.severity = document.getElementById("severityFilter").value;
+                    }
+                },
+                drawCallback: function () {
+                    document.querySelectorAll("#deployFindingsTable tbody tr.table-group-row").forEach(function (row) { row.remove(); });
+                    formatGroupRows(this.api());
+                },
+                columns: [
+                    {
+                        data: null,
+                        name: "expand",
+                        orderable: false,
+                        className: "details-toggle",
+                        defaultContent: '<button class="btn btn-sm btn-outline-secondary" type="button">+</button>'
+                    },
+                    { data: "artifactType", name: "artifactType" },
+                    { data: "severity", name: "severity", render: function (data) { return severityBadge(data); } },
+                    { data: "ruleId", name: "ruleId", className: "font-monospace small" },
+                    {
+                        data: null,
+                        name: "filePath",
+                        className: "font-monospace small",
+                        render: function (_, __, row) {
+                            return `<a href="/run/${encodeURIComponent(runId)}/file/${encodeURIComponent(row.fileId)}" class="link-dark">${escapeHtml(row.filePath)}</a>`;
+                        }
+                    },
+                    { data: "locationPath", name: "locationPath", className: "font-monospace small", defaultContent: "$" },
+                    { data: "message", name: "message", orderable: false, render: function (data) { return escapeHtml(data); } },
+                    {
+                        data: "ruleDescription",
+                        name: "remediation",
+                        orderable: false,
+                        render: function (data) { return `<span class="small">${escapeHtml(data)}</span>`; }
+                    }
+                ]
+            });
+
+            document.getElementById("applyDeployFilters").addEventListener("click", function () {
+                table.ajax.reload();
+            });
+
+            document.getElementById("deployFindingsTable").addEventListener("click", function (event) {
+                const button = event.target.closest("button");
+                if (!button) return;
+
+                const rowElement = button.closest("tr");
+                const row = table.row(rowElement);
+                if (row.child.isShown()) {
+                    row.child.hide();
+                    button.textContent = "+";
+                    return;
+                }
+
+                const data = row.data();
+                const metadata = parseMetadata(data.metadata);
+                const parserMode = metadata.parserMode || "n/a";
+                const matchedValue = metadata.matchedValue || "n/a";
+                const snippet = data.snippet
+                    ? `<pre><code class="language-yaml">${escapeHtml(data.snippet)}</code></pre>`
+                    : "<p class=\"small text-body-secondary mb-2\">No snippet captured.</p>";
+                const details = `
+                    <div class="p-2">
+                        <div class="row g-2 mb-2 small">
+                            <div class="col-md-3"><span class="text-body-secondary">Artifact Type:</span> ${escapeHtml(data.artifactType || "Unknown")}</div>
+                            <div class="col-md-3"><span class="text-body-secondary">Subcategory:</span> ${escapeHtml(data.ruleSubcategory || "missing-safety")}</div>
+                            <div class="col-md-3"><span class="text-body-secondary">Parser Mode:</span> ${escapeHtml(parserMode)}</div>
+                            <div class="col-md-3"><span class="text-body-secondary">Location:</span> <span class="font-monospace">${escapeHtml(data.locationPath || "$")}</span></div>
+                        </div>
+                        <div class="small text-body-secondary mb-1">Matched Value</div>
+                        <div class="font-monospace small mb-2">${escapeHtml(matchedValue)}</div>
+                        <div class="small text-body-secondary mb-1">Context Snippet</div>
+                        ${snippet}
+                    </div>`;
+
+                row.child(details).show();
+                button.textContent = "-";
+                document.querySelectorAll("pre code").forEach(function (el) {
+                    hljs.highlightElement(el);
+                });
+            });
+        })();
+    </script>
+}

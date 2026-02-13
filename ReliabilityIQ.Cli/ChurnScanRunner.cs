@@ -1,6 +1,7 @@
 using System.Text.Json;
 using ReliabilityIQ.Analyzers.GitHistory;
 using ReliabilityIQ.Core;
+using ReliabilityIQ.Core.Configuration;
 using ReliabilityIQ.Core.Discovery;
 using ReliabilityIQ.Core.GitHistory;
 using ReliabilityIQ.Core.Persistence;
@@ -10,7 +11,7 @@ namespace ReliabilityIQ.Cli;
 public sealed record ChurnScanOptions(
     string RepoPath,
     string? DatabasePath,
-    string Since,
+    string? Since,
     string? ServiceMapPath = null);
 
 public static class ChurnScanRunner
@@ -30,10 +31,27 @@ public static class ChurnScanRunner
                 throw new ArgumentException("Repository path is required.", nameof(options));
             }
 
-            var sinceDays = ParseSinceDays(options.Since);
             var startedAt = DateTimeOffset.UtcNow;
             var repoRoot = RepoDiscovery.FindRepoRoot(options.RepoPath);
-            var files = RepoDiscovery.DiscoverFiles(repoRoot, options: new RepoDiscoveryOptions(ComputeContentHash: false));
+            var config = RuleConfigurationLoader.LoadForRepo(
+                repoRoot,
+                new CliRuleOverrides(
+                    PortabilityFailOn: null,
+                    MagicMinOccurrences: null,
+                    MagicTop: null,
+                    ChurnSinceDays: ParseSinceDays(options.Since),
+                    DeployEv2PathMarkers: null,
+                    DeployAdoPathMarkers: null));
+            var sinceDays = ParseSinceDays(options.Since, config.ScanSettings);
+
+            var files = RepoDiscovery.DiscoverFiles(
+                repoRoot,
+                options: new RepoDiscoveryOptions(
+                    UseGitIgnore: config.Scan.UseGitIgnore ?? true,
+                    MaxFileSizeBytes: config.Scan.MaxFileSizeBytes ?? 2 * 1024 * 1024,
+                    AdditionalExcludeDirectories: config.Scan.Excludes,
+                    ExcludeDotDirectories: config.Scan.ExcludeDotDirectories ?? true,
+                    ComputeContentHash: false));
             var progressReporter = CreateProgressReporter(output);
 
             var analyzer = new GitHistoryAnalyzer();
@@ -111,6 +129,7 @@ public static class ChurnScanRunner
                     })
                 })
                 .ToList();
+            findings = FindingPolicyEngine.Apply(findings, config).ToList();
 
             var dbPath = ResolveDatabasePath(options.DatabasePath, repoRoot);
             var writer = new SqliteResultsWriter(dbPath);
@@ -127,11 +146,11 @@ public static class ChurnScanRunner
         }
     }
 
-    internal static int ParseSinceDays(string? since)
+    internal static int? ParseSinceDays(string? since)
     {
         if (string.IsNullOrWhiteSpace(since))
         {
-            return 365;
+            return null;
         }
 
         var token = since.Trim().ToLowerInvariant();
@@ -141,6 +160,33 @@ public static class ChurnScanRunner
         }
 
         throw new ArgumentException("Invalid --since format. Expected values like 90d, 180d, 365d.", nameof(since));
+    }
+
+    internal static int ParseSinceDays(string? since, IReadOnlyDictionary<string, string> settings)
+    {
+        var parsedCli = ParseSinceDays(since);
+        if (parsedCli.HasValue)
+        {
+            return parsedCli.Value;
+        }
+
+        if (settings.TryGetValue("churn.sinceDays", out var sinceDaysSetting) &&
+            int.TryParse(sinceDaysSetting, out var parsedDays) &&
+            parsedDays > 0)
+        {
+            return parsedDays;
+        }
+
+        if (settings.TryGetValue("churn.since", out var sinceWindow))
+        {
+            var fromWindow = ParseSinceDays(sinceWindow);
+            if (fromWindow.HasValue)
+            {
+                return fromWindow.Value;
+            }
+        }
+
+        return 365;
     }
 
     private static string ResolveDatabasePath(string? databasePath, string repoRoot)

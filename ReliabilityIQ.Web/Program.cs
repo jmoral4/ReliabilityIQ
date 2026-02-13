@@ -136,6 +136,60 @@ app.MapGet("/api/run/{runId}/findings", async (
     });
 });
 
+app.MapGet("/api/run/{runId}/deploy", async (
+    string runId,
+    HttpRequest request,
+    SqliteResultsQueries queries,
+    CancellationToken cancellationToken) =>
+{
+    var draw = ParseInt(request.Query["draw"], 1);
+    var start = ParseInt(request.Query["start"], 0);
+    var length = ParseInt(request.Query["length"], 25);
+
+    var sortColumnIndex = ParseInt(request.Query["order[0][column]"], 2);
+    var sortDirectionRaw = request.Query["order[0][dir]"].ToString();
+    var sortDirection = string.Equals(sortDirectionRaw, "desc", StringComparison.OrdinalIgnoreCase);
+    var sortFieldRaw = request.Query[$"columns[{sortColumnIndex}][name]"].ToString();
+
+    var requestModel = new DeployFindingsQueryRequest(
+        Offset: start,
+        Limit: length,
+        SortField: ParseDeploySortField(sortFieldRaw),
+        SortDescending: sortDirection,
+        Filters: new DeployFindingsQueryFilters(
+            ArtifactType: NullIfEmpty(request.Query["artifactType"].ToString()),
+            RuleSubcategory: NullIfEmpty(request.Query["subcategory"].ToString()),
+            Severity: NullIfEmpty(request.Query["severity"].ToString()),
+            IncludeSuppressed: ParseBool(request.Query["includeSuppressed"])));
+
+    var page = await queries.GetDeployFindings(runId, requestModel, cancellationToken).ConfigureAwait(false);
+    return Results.Ok(new
+    {
+        draw,
+        recordsTotal = page.TotalCount,
+        recordsFiltered = page.FilteredCount,
+        data = page.Items.Select(item => new
+        {
+            findingId = item.FindingId,
+            fileId = item.FileId,
+            artifactType = item.ArtifactType,
+            ruleSubcategory = item.RuleSubcategory,
+            ruleId = item.RuleId,
+            ruleTitle = item.RuleTitle,
+            ruleDescription = item.RuleDescription,
+            filePath = item.FilePath,
+            line = item.Line,
+            column = item.Column,
+            severity = item.Severity,
+            message = item.Message,
+            snippet = item.Snippet,
+            locationPath = item.LocationPath,
+            metadata = item.Metadata,
+            isSuppressed = item.IsSuppressed
+        })
+    });
+});
+
 app.MapGet("/api/run/{runId}/magic-strings", async (
     string runId,
     HttpRequest request,
@@ -417,6 +471,19 @@ static FindingsSortField ParseSortField(string? sortField)
 static bool ParseBool(string? value)
 {
     return bool.TryParse(value, out var parsed) && parsed;
+}
+
+static DeployFindingsSortField ParseDeploySortField(string? sortField)
+{
+    return sortField?.Trim().ToLowerInvariant() switch
+    {
+        "artifacttype" => DeployFindingsSortField.ArtifactType,
+        "severity" => DeployFindingsSortField.Severity,
+        "ruleid" => DeployFindingsSortField.RuleId,
+        "filepath" => DeployFindingsSortField.FilePath,
+        "locationpath" => DeployFindingsSortField.LocationPath,
+        _ => DeployFindingsSortField.Severity
+    };
 }
 
 static GitMetricsSortField ParseGitMetricsSortField(string? sortField)

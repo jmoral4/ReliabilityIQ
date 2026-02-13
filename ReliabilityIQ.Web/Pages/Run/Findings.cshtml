@@ -49,6 +49,11 @@ else
                     </div>
 
                     <div class="mb-3">
+                        <label for="rulePrefixFilter" class="form-label">Rule Prefix</label>
+                        <input id="rulePrefixFilter" class="form-control form-control-sm font-monospace" type="text" placeholder="deploy." value="@Model.RulePrefix" />
+                    </div>
+
+                    <div class="mb-3">
                         <label for="categoryFilter" class="form-label">File Category</label>
                         <select id="categoryFilter" class="form-select form-select-sm">
                             <option value="">All</option>
@@ -174,6 +179,7 @@ else
                 data: function (d) {
                     d.severity = document.getElementById("severityFilter").value;
                     d.rule = document.getElementById("ruleFilter").value;
+                    d.rulePrefix = document.getElementById("rulePrefixFilter").value;
                     d.confidence = document.getElementById("confidenceFilter").value;
                     d.fileCategory = document.getElementById("categoryFilter").value;
                     d.language = document.getElementById("languageFilter").value;

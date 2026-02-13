@@ -1,4 +1,5 @@
 using ReliabilityIQ.Analyzers.MagicStrings;
+using ReliabilityIQ.Core.Configuration;
 using ReliabilityIQ.Core;
 using ReliabilityIQ.Core.Discovery;
 using ReliabilityIQ.Core.MagicStrings;
@@ -37,10 +38,27 @@ public static class MagicStringsScanRunner
 
             var startedAt = DateTimeOffset.UtcNow;
             var repoRoot = RepoDiscovery.FindRepoRoot(options.RepoPath);
-            var files = RepoDiscovery.DiscoverFiles(repoRoot);
+            var config = RuleConfigurationLoader.LoadForRepo(
+                repoRoot,
+                new CliRuleOverrides(
+                    PortabilityFailOn: null,
+                    MagicMinOccurrences: options.MinOccurrences > 0 ? options.MinOccurrences : null,
+                    MagicTop: options.Top > 0 ? options.Top : null,
+                    ChurnSinceDays: null,
+                    DeployEv2PathMarkers: null,
+                    DeployAdoPathMarkers: null));
+
+            var files = RepoDiscovery.DiscoverFiles(
+                repoRoot,
+                options: new RepoDiscoveryOptions(
+                    UseGitIgnore: config.Scan.UseGitIgnore ?? true,
+                    MaxFileSizeBytes: config.Scan.MaxFileSizeBytes ?? 2 * 1024 * 1024,
+                    AdditionalExcludeDirectories: config.Scan.Excludes,
+                    ExcludeDotDirectories: config.Scan.ExcludeDotDirectories ?? true,
+                    ComputeContentHash: true));
 
             var analyzer = new MagicStringAnalyzer();
-            var analyzerOptions = BuildAnalyzerOptions(repoRoot, options);
+            var analyzerOptions = BuildAnalyzerOptions(repoRoot, options, config.ScanSettings);
 
             var fileInputs = new List<MagicStringFileInput>(files.Count);
             foreach (var file in files)
@@ -68,6 +86,8 @@ public static class MagicStringsScanRunner
                 Metadata = candidate.Metadata
             }).ToList();
 
+            findings = FindingPolicyEngine.Apply(findings, config).ToList();
+
             var run = new ScanRun(
                 RunId: runId,
                 RepoRoot: repoRoot,
@@ -86,7 +106,12 @@ public static class MagicStringsScanRunner
 
             var dbPath = ResolveDatabasePath(options.DatabasePath, repoRoot);
             var writer = new SqliteResultsWriter(dbPath);
-            await writer.WriteAsync(run, persistedFiles, findings, MagicStringRuleDefinitions.AllRules, cancellationToken: cancellationToken).ConfigureAwait(false);
+            var ruleDefinitions = RuleCatalog.GetBuiltInDefinitions()
+                .Concat(config.Rules.CustomRules.Select(r => new RuleDefinition(r.Id, r.Title ?? r.Id, r.Severity, r.Description ?? r.Message)))
+                .GroupBy(r => r.RuleId, StringComparer.OrdinalIgnoreCase)
+                .Select(g => g.First())
+                .ToList();
+            await writer.WriteAsync(run, persistedFiles, findings, ruleDefinitions, cancellationToken: cancellationToken).ConfigureAwait(false);
 
             await PrintSummaryAsync(output, run, dbPath, candidates, options.Top).ConfigureAwait(false);
             return 0;
@@ -113,7 +138,7 @@ public static class MagicStringsScanRunner
         }
     }
 
-    private static MagicStringsAnalysisOptions BuildAnalyzerOptions(string repoRoot, MagicStringsScanOptions options)
+    private static MagicStringsAnalysisOptions BuildAnalyzerOptions(string repoRoot, MagicStringsScanOptions options, IReadOnlyDictionary<string, string> settings)
     {
         var defaults = MagicStringsAnalysisOptions.CreateDefault();
         var configPath = ResolveConfigPath(repoRoot, options.ConfigPath);
@@ -121,13 +146,31 @@ public static class MagicStringsScanRunner
             ? MagicStringsConfigParser.Parse(configPath, defaults)
             : defaults;
 
-        var maxFindingsTotal = options.Top > 0 ? options.Top : fromConfig.MaxFindingsTotal;
+        var mergedMin = options.MinOccurrences > 0
+            ? options.MinOccurrences
+            : TryReadIntSetting(settings, "magic.minOccurrences") ?? fromConfig.MinOccurrences;
+
+        var maxFindingsTotal = options.Top > 0
+            ? options.Top
+            : TryReadIntSetting(settings, "magic.top") ?? fromConfig.MaxFindingsTotal;
 
         return fromConfig with
         {
-            MinOccurrences = options.MinOccurrences > 0 ? options.MinOccurrences : fromConfig.MinOccurrences,
+            MinOccurrences = mergedMin,
             MaxFindingsTotal = maxFindingsTotal
         };
+    }
+
+    private static int? TryReadIntSetting(IReadOnlyDictionary<string, string> settings, string key)
+    {
+        if (settings.TryGetValue(key, out var value) &&
+            int.TryParse(value, out var parsed) &&
+            parsed > 0)
+        {
+            return parsed;
+        }
+
+        return null;
     }
 
     private static string ResolveConfigPath(string repoRoot, string? explicitPath)

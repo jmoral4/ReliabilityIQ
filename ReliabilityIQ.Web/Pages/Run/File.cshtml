@@ -94,6 +94,49 @@ else
         </div>
     </div>
 
+    @if (Model.DeploymentContexts.Count > 0 || string.Equals(Model.FileDetails.Category, "DeploymentArtifact", StringComparison.OrdinalIgnoreCase))
+    {
+        <section class="mb-4">
+            <div class="card">
+                <div class="card-body">
+                    <h2 class="h6 text-uppercase text-body-secondary">Deployment Context</h2>
+                    @if (Model.DeploymentContexts.Count == 0)
+                    {
+                        <p class="text-body-secondary mb-0">This artifact is categorized as deployment-related but has no `deploy.*` findings in this run.</p>
+                    }
+                    else
+                    {
+                        <div class="table-responsive">
+                            <table class="table table-sm align-middle mb-0">
+                                <thead>
+                                <tr>
+                                    <th>Artifact Type</th>
+                                    <th>Rule</th>
+                                    <th>Location</th>
+                                    <th>Matched Value</th>
+                                    <th>Parser Mode</th>
+                                </tr>
+                                </thead>
+                                <tbody>
+                                @foreach (var context in Model.DeploymentContexts)
+                                {
+                                    <tr>
+                                        <td>@context.ArtifactType</td>
+                                        <td class="font-monospace small">@context.RuleId</td>
+                                        <td class="font-monospace small">@context.LocationPath</td>
+                                        <td class="font-monospace small">@(context.MatchedValue ?? "-")</td>
+                                        <td>@context.ParserMode</td>
+                                    </tr>
+                                }
+                                </tbody>
+                            </table>
+                        </div>
+                    }
+                </div>
+            </div>
+        </section>
+    }
+
     <section>
         <h2 class="h5 mb-3">Snippet Timeline</h2>
         @if (Model.Findings.Count == 0)

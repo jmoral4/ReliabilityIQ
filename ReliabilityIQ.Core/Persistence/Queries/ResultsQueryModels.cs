@@ -106,6 +106,97 @@ public sealed record FindingsPage(
     int FilteredCount,
     IReadOnlyList<FindingListItem> Items);
 
+public sealed record DeployFindingsQueryFilters(
+    string? ArtifactType = null,
+    string? RuleSubcategory = null,
+    string? Severity = null,
+    bool IncludeSuppressed = false);
+
+public enum DeployFindingsSortField
+{
+    ArtifactType,
+    Severity,
+    RuleId,
+    FilePath,
+    LocationPath
+}
+
+public sealed record DeployFindingsQueryRequest(
+    int Offset,
+    int Limit,
+    DeployFindingsSortField SortField,
+    bool SortDescending,
+    DeployFindingsQueryFilters Filters)
+{
+    public static DeployFindingsQueryRequest Default { get; } = new(
+        Offset: 0,
+        Limit: 50,
+        SortField: DeployFindingsSortField.Severity,
+        SortDescending: false,
+        Filters: new DeployFindingsQueryFilters());
+}
+
+public sealed class DeployFindingListItem
+{
+    public long FindingId { get; init; }
+
+    public long FileId { get; init; }
+
+    public string ArtifactType { get; init; } = string.Empty;
+
+    public string RuleSubcategory { get; init; } = string.Empty;
+
+    public string RuleId { get; init; } = string.Empty;
+
+    public string RuleTitle { get; init; } = string.Empty;
+
+    public string RuleDescription { get; init; } = string.Empty;
+
+    public string FilePath { get; init; } = string.Empty;
+
+    public long Line { get; init; }
+
+    public long Column { get; init; }
+
+    public string Severity { get; init; } = string.Empty;
+
+    public string Message { get; init; } = string.Empty;
+
+    public string? Snippet { get; init; }
+
+    public string? LocationPath { get; init; }
+
+    public string? Metadata { get; init; }
+
+    public bool IsSuppressed { get; init; }
+}
+
+public sealed record DeployFindingsPage(
+    int TotalCount,
+    int FilteredCount,
+    IReadOnlyList<DeployFindingListItem> Items);
+
+public sealed record DeploymentSeveritySummaryItem(
+    string ArtifactType,
+    long ErrorCount,
+    long WarningCount,
+    long InfoCount)
+{
+    public long TotalCount => ErrorCount + WarningCount + InfoCount;
+}
+
+public sealed record DeploymentArtifactRiskItem(
+    long FileId,
+    string FilePath,
+    string ArtifactType,
+    long ErrorCount,
+    long WarningCount,
+    long InfoCount,
+    double RiskScore)
+{
+    public long TotalCount => ErrorCount + WarningCount + InfoCount;
+}
+
 public sealed record FileSummaryItem(
     long FileId,
     string FilePath,

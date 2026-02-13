@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ReliabilityIQ Rule Configuration",
+  "type": "object",
+  "definitions": {
+    "ruleOverride": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "severity": { "type": "string", "enum": ["Error", "Warning", "Info", "error", "warning", "info"] }
+      }
+    },
+    "customRule": {
+      "type": "object",
+      "required": ["id", "pattern", "message"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "pattern": { "type": "string", "minLength": 1 },
+        "message": { "type": "string", "minLength": 1 },
+        "severity": { "type": "string", "enum": ["Error", "Warning", "Info", "error", "warning", "info"] },
+        "enabled": { "type": "boolean" },
+        "fileCategories": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "allowlistEntry": {
+      "type": "object",
+      "required": ["path", "ruleId"],
+      "additionalProperties": false,
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "ruleId": { "type": "string", "minLength": 1 },
+        "pattern": { "type": "string" }
+      }
+    }
+  }
+}

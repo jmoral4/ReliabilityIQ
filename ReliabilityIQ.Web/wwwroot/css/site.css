@@ -97,6 +97,11 @@ pre {
     border: 1px solid #c8d8ea;
 }
 
+#deployFindingsTable tbody tr.table-group-row td {
+    background-color: #eef3fb;
+    border-top: 1px solid #d3deef;
+}
+
 @media (max-width: 767px) {
     .timeline-item {
         grid-template-columns: 1fr;

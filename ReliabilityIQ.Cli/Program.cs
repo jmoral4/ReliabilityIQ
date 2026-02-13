@@ -1,6 +1,8 @@
 using System.CommandLine;
 using System.Diagnostics;
 using ReliabilityIQ.Core;
+using ReliabilityIQ.Core.Configuration;
+using ReliabilityIQ.Core.Discovery;
 
 namespace ReliabilityIQ.Cli;
 
@@ -17,6 +19,14 @@ public static class Program
         scan.AddCommand(CreateDeployCommand());
         scan.AddCommand(CreateAllScansCommand());
         root.AddCommand(scan);
+
+        var rules = new Command("rules", "Rule configuration commands");
+        rules.AddCommand(CreateRulesValidateCommand());
+        rules.AddCommand(CreateRulesListCommand());
+        rules.AddCommand(CreateRulesInitCommand());
+        root.AddCommand(rules);
+
+        root.AddCommand(CreateInitCommand());
 
         var server = new Command("server", "Run the ReliabilityIQ web server");
         server.AddCommand(CreateServerStartCommand());
@@ -38,7 +48,7 @@ public static class Program
         var dbOption = new Option<FileInfo?>("--db", "SQLite database file path (default: <repo-root>/reliabilityiq-results.db)");
         var suppressionsOption = new Option<FileInfo?>("--suppressions", "Optional suppression file path (default: <repo-root>/reliabilityiq.suppressions.yaml)");
 
-        var failOnOption = new Option<string>("--fail-on", () => "error",
+        var failOnOption = new Option<string?>("--fail-on",
             "Exit with code 1 when findings at or above this severity are present. Values: error|warning|info.");
 
         command.AddOption(repoOption);
@@ -48,11 +58,17 @@ public static class Program
 
         command.SetHandler(async (repo, db, suppressions, failOn) =>
         {
-            if (!TryParseFailOn(failOn, out var failOnSeverity))
+            FindingSeverity? failOnSeverity = null;
+            if (!string.IsNullOrWhiteSpace(failOn))
             {
-                Console.Error.WriteLine("Invalid value for --fail-on. Allowed values: error, warning, info.");
-                Environment.ExitCode = 2;
-                return;
+                if (!TryParseFailOn(failOn, out var parsedSeverity))
+                {
+                    Console.Error.WriteLine("Invalid value for --fail-on. Allowed values: error, warning, info.");
+                    Environment.ExitCode = 2;
+                    return;
+                }
+
+                failOnSeverity = parsedSeverity;
             }
 
             var options = new PortabilityScanOptions(repo.FullName, db?.FullName, failOnSeverity, suppressions?.FullName);
@@ -63,7 +79,7 @@ public static class Program
         return command;
     }
 
-    private static bool TryParseFailOn(string value, out FindingSeverity severity)
+    private static bool TryParseFailOn(string? value, out FindingSeverity severity)
     {
         severity = FindingSeverity.Error;
         if (string.IsNullOrWhiteSpace(value))
@@ -96,8 +112,8 @@ public static class Program
         };
 
         var dbOption = new Option<FileInfo?>("--db", "SQLite database file path (default: <repo-root>/reliabilityiq-results.db)");
-        var minOccurrencesOption = new Option<int>("--min-occurrences", () => 2, "Minimum occurrence count required for a candidate.");
-        var topOption = new Option<int>("--top", () => 500, "Maximum number of ranked candidates to persist.");
+        var minOccurrencesOption = new Option<int?>("--min-occurrences", "Minimum occurrence count required for a candidate.");
+        var topOption = new Option<int?>("--top", "Maximum number of ranked candidates to persist.");
         var configOption = new Option<FileInfo?>("--config", "Optional magic strings YAML config path (default: <repo-root>/reliabilityiq.magicstrings.yaml)");
 
         command.AddOption(repoOption);
@@ -111,8 +127,8 @@ public static class Program
             var options = new MagicStringsScanOptions(
                 RepoPath: repo.FullName,
                 DatabasePath: db?.FullName,
-                MinOccurrences: minOccurrences,
-                Top: top,
+                MinOccurrences: minOccurrences ?? 0,
+                Top: top ?? 0,
                 ConfigPath: config?.FullName);
 
             var exitCode = await MagicStringsScanRunner.ExecuteAsync(options, Console.Out, CancellationToken.None).ConfigureAwait(false);
@@ -131,12 +147,12 @@ public static class Program
             IsRequired = true
         };
         var dbOption = new Option<FileInfo?>("--db", "SQLite database file path (default: <repo-root>/reliabilityiq-results.db)");
-        var failOnOption = new Option<string>("--fail-on", () => "error", "Exit with code 1 when portability findings at or above this severity are present. Values: error|warning|info.");
+        var failOnOption = new Option<string?>("--fail-on", "Exit with code 1 when portability findings at or above this severity are present. Values: error|warning|info.");
         var suppressionsOption = new Option<FileInfo?>("--suppressions", "Optional suppression file path (default: <repo-root>/reliabilityiq.suppressions.yaml)");
-        var minOccurrencesOption = new Option<int>("--min-occurrences", () => 2, "Minimum occurrence count required for magic string candidates.");
-        var topOption = new Option<int>("--top", () => 500, "Maximum number of ranked magic string candidates to persist.");
+        var minOccurrencesOption = new Option<int?>("--min-occurrences", "Minimum occurrence count required for magic string candidates.");
+        var topOption = new Option<int?>("--top", "Maximum number of ranked magic string candidates to persist.");
         var configOption = new Option<FileInfo?>("--config", "Optional magic strings YAML config path (default: <repo-root>/reliabilityiq.magicstrings.yaml)");
-        var sinceOption = new Option<string>("--since", () => "365d", "Git lookback window for churn scan (e.g., 90d, 180d, 365d).");
+        var sinceOption = new Option<string?>("--since", "Git lookback window for churn scan (e.g., 90d, 180d, 365d).");
         var serviceMapOption = new Option<FileInfo?>("--service-map", "Optional service boundary mapping file (format: ServiceName=glob).");
         var ev2PathMarkersOption = new Option<string?>("--ev2-path-markers", "Semicolon-delimited EV2 path markers override.");
         var adoPathMarkersOption = new Option<string?>("--ado-path-markers", "Semicolon-delimited ADO path markers override.");
@@ -167,11 +183,17 @@ public static class Program
             var ev2PathMarkers = context.ParseResult.GetValueForOption(ev2PathMarkersOption);
             var adoPathMarkers = context.ParseResult.GetValueForOption(adoPathMarkersOption);
 
-            if (!TryParseFailOn(failOn, out var failOnSeverity))
+            FindingSeverity? failOnSeverity = null;
+            if (!string.IsNullOrWhiteSpace(failOn))
             {
-                Console.Error.WriteLine("Invalid value for --fail-on. Allowed values: error, warning, info.");
-                Environment.ExitCode = 2;
-                return;
+                if (!TryParseFailOn(failOn, out var parsedSeverity))
+                {
+                    Console.Error.WriteLine("Invalid value for --fail-on. Allowed values: error, warning, info.");
+                    Environment.ExitCode = 2;
+                    return;
+                }
+
+                failOnSeverity = parsedSeverity;
             }
 
             var portabilityExitCode = await PortabilityScanRunner.ExecuteAsync(
@@ -186,7 +208,7 @@ public static class Program
             }
 
             var magicExitCode = await MagicStringsScanRunner.ExecuteAsync(
-                new MagicStringsScanOptions(repo.FullName, db?.FullName, minOccurrences, top, config?.FullName),
+                new MagicStringsScanOptions(repo.FullName, db?.FullName, minOccurrences ?? 0, top ?? 0, config?.FullName),
                 Console.Out,
                 CancellationToken.None).ConfigureAwait(false);
 
@@ -228,7 +250,7 @@ public static class Program
         };
 
         var dbOption = new Option<FileInfo?>("--db", "SQLite database file path (default: <repo-root>/reliabilityiq-results.db)");
-        var sinceOption = new Option<string>("--since", () => "365d", "Git lookback window (e.g., 90d, 180d, 365d).");
+        var sinceOption = new Option<string?>("--since", "Git lookback window (e.g., 90d, 180d, 365d).");
         var serviceMapOption = new Option<FileInfo?>("--service-map", "Optional service boundary mapping file (format: ServiceName=glob).");
 
         command.AddOption(repoOption);
@@ -242,6 +264,128 @@ public static class Program
             var exitCode = await ChurnScanRunner.ExecuteAsync(options, Console.Out, CancellationToken.None).ConfigureAwait(false);
             Environment.ExitCode = exitCode;
         }, repoOption, dbOption, sinceOption, serviceMapOption);
+
+        return command;
+    }
+
+    private static Command CreateRulesValidateCommand()
+    {
+        var command = new Command("validate", "Validate rule and allowlist configuration");
+        var configOption = new Option<DirectoryInfo?>("--config", "Path to repo root or .reliabilityiq directory.");
+        command.AddOption(configOption);
+
+        command.SetHandler((configPath) =>
+        {
+            var result = RuleConfigurationValidator.Validate(configPath?.FullName);
+            foreach (var issue in result.Issues.OrderBy(i => i.Severity).ThenBy(i => i.File, StringComparer.OrdinalIgnoreCase))
+            {
+                Console.WriteLine($"[{issue.Severity}] {issue.File}: {issue.Message}");
+            }
+
+            if (result.Issues.Count == 0)
+            {
+                Console.WriteLine("Configuration is valid.");
+            }
+
+            Environment.ExitCode = result.IsValid ? 0 : 2;
+        }, configOption);
+
+        return command;
+    }
+
+    private static Command CreateRulesListCommand()
+    {
+        var command = new Command("list", "List effective merged rules");
+        var configOption = new Option<DirectoryInfo?>("--config", "Path to repo root or .reliabilityiq directory.");
+        var enabledOnlyOption = new Option<bool>("--enabled-only", "Only list enabled rules.");
+        var categoryOption = new Option<string?>("--category", "Filter category (portability, magic-strings, churn, deploy-ev2, deploy-ado, incidents, custom).");
+
+        command.AddOption(configOption);
+        command.AddOption(enabledOnlyOption);
+        command.AddOption(categoryOption);
+
+        command.SetHandler((configPath, enabledOnly, category) =>
+        {
+            var bundle = RuleConfigurationLoader.LoadFromPath(configPath?.FullName);
+            var rows = bundle.EffectiveRules.Values
+                .OrderBy(e => RuleCatalog.GetCategory(e.Definition.RuleId), StringComparer.OrdinalIgnoreCase)
+                .ThenBy(e => e.Definition.RuleId, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            if (!string.IsNullOrWhiteSpace(category))
+            {
+                rows = rows.Where(r => string.Equals(RuleCatalog.GetCategory(r.Definition.RuleId), category, StringComparison.OrdinalIgnoreCase)).ToList();
+            }
+
+            if (enabledOnly)
+            {
+                rows = rows.Where(r => r.Enabled).ToList();
+            }
+
+            foreach (var row in rows)
+            {
+                Console.WriteLine($"{RuleCatalog.GetCategory(row.Definition.RuleId),-12} {row.Definition.RuleId,-55} enabled={row.Enabled,-5} severity={row.Severity,-7} source={Path.GetFileName(row.Source)}");
+            }
+
+            if (rows.Count == 0)
+            {
+                Console.WriteLine("No rules matched the provided filters.");
+            }
+
+            Environment.ExitCode = 0;
+        }, configOption, enabledOnlyOption, categoryOption);
+
+        return command;
+    }
+
+    private static Command CreateRulesInitCommand()
+    {
+        var command = new Command("init", "Initialize .reliabilityiq rule/config templates");
+        var repoOption = new Option<DirectoryInfo?>("--repo", "Repository path (default: current directory).");
+        command.AddOption(repoOption);
+
+        command.SetHandler((repo) =>
+        {
+            var root = ResolveInitRoot(repo?.FullName);
+            var created = RuleInitScaffolder.Initialize(root);
+            foreach (var path in created)
+            {
+                Console.WriteLine($"created: {path}");
+            }
+
+            if (created.Count == 0)
+            {
+                Console.WriteLine("No changes made; .reliabilityiq structure already exists.");
+            }
+
+            Environment.ExitCode = 0;
+        }, repoOption);
+
+        return command;
+    }
+
+    private static Command CreateInitCommand()
+    {
+        var command = new Command("init", "Initialize ReliabilityIQ configuration");
+        var repoOption = new Option<DirectoryInfo?>("--repo", "Repository path (default: current directory).");
+        command.AddOption(repoOption);
+
+        command.SetHandler((repo) =>
+        {
+            var root = ResolveInitRoot(repo?.FullName);
+            var created = RuleInitScaffolder.Initialize(root);
+            foreach (var path in created)
+            {
+                Console.WriteLine($"created: {path}");
+            }
+
+            if (created.Count == 0)
+            {
+                Console.WriteLine("No changes made; .reliabilityiq structure already exists.");
+            }
+
+            Environment.ExitCode = 0;
+        }, repoOption);
 
         return command;
     }
@@ -418,5 +562,16 @@ public static class Program
         {
             // Best-effort shutdown.
         }
+    }
+
+    private static string ResolveInitRoot(string? path)
+    {
+        var root = string.IsNullOrWhiteSpace(path) ? Directory.GetCurrentDirectory() : Path.GetFullPath(path);
+        if (Directory.Exists(Path.Combine(root, ".git")))
+        {
+            return root;
+        }
+
+        return RepoDiscovery.FindRepoRoot(root);
     }
 }

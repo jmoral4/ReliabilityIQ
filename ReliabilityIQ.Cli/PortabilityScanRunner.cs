@@ -4,6 +4,7 @@ using ReliabilityIQ.Analyzers.CSharp;
 using ReliabilityIQ.Analyzers.PowerShell;
 using ReliabilityIQ.Analyzers.Regex;
 using ReliabilityIQ.Analyzers.TreeSitter;
+using ReliabilityIQ.Core.Configuration;
 using ReliabilityIQ.Core;
 using ReliabilityIQ.Core.Discovery;
 using ReliabilityIQ.Core.Persistence;
@@ -11,7 +12,7 @@ using ReliabilityIQ.Core.Portability;
 
 namespace ReliabilityIQ.Cli;
 
-public sealed record PortabilityScanOptions(string RepoPath, string? DatabasePath, FindingSeverity FailOnSeverity, string? SuppressionsPath = null);
+public sealed record PortabilityScanOptions(string RepoPath, string? DatabasePath, FindingSeverity? FailOnSeverity, string? SuppressionsPath = null);
 
 public static class PortabilityScanRunner
 {
@@ -32,7 +33,19 @@ public static class PortabilityScanRunner
 
             var startedAt = DateTimeOffset.UtcNow;
             var repoRoot = RepoDiscovery.FindRepoRoot(options.RepoPath);
-            var files = RepoDiscovery.DiscoverFiles(repoRoot);
+            var config = RuleConfigurationLoader.LoadForRepo(
+                repoRoot,
+                new CliRuleOverrides(
+                    PortabilityFailOn: options.FailOnSeverity,
+                    MagicMinOccurrences: null,
+                    MagicTop: null,
+                    ChurnSinceDays: null,
+                    DeployEv2PathMarkers: null,
+                    DeployAdoPathMarkers: null));
+
+            var files = RepoDiscovery.DiscoverFiles(
+                repoRoot,
+                options: BuildDiscoveryOptions(config.Scan));
 
             var csharpAnalyzer = new CSharpPortabilityAnalyzer();
             var treeSitterAnalyzer = new TreeSitterPortabilityAnalyzer();
@@ -83,12 +96,18 @@ public static class PortabilityScanRunner
             var powerShellWorkers = StartWorkers(powerShellChannel.Reader, powerShellAnalyzer, findingsChannel.Writer, 1, cancellationToken);
             var regexWorkers = StartWorkers(regexChannel.Reader, regexAnalyzer, findingsChannel.Writer, Environment.ProcessorCount >= 8 ? 2 : 1, cancellationToken);
 
-            var sharedConfig = BuildAnalyzerConfiguration(repoRoot, options.SuppressionsPath);
+            var sharedConfig = BuildAnalyzerConfiguration(repoRoot, options.SuppressionsPath, config);
             foreach (var file in files)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var content = await File.ReadAllTextAsync(file.FullPath, cancellationToken).ConfigureAwait(false);
                 await fileWorkChannel.Writer.WriteAsync(new FileWork(file, content, sharedConfig), cancellationToken).ConfigureAwait(false);
+
+                var customFindings = CustomRegexRuleEvaluator.Evaluate(file.RelativePath, content, file.Category, config);
+                foreach (var finding in customFindings)
+                {
+                    findings.Add(finding with { RunId = string.Empty });
+                }
             }
 
             fileWorkChannel.Writer.TryComplete();
@@ -121,14 +140,28 @@ public static class PortabilityScanRunner
                 .ThenBy(f => f.Column)
                 .ToList();
 
+            normalizedFindings = FindingPolicyEngine.Apply(normalizedFindings, config)
+                .Select(f => f with { RunId = runId })
+                .OrderBy(f => f.FilePath, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(f => f.Line)
+                .ThenBy(f => f.Column)
+                .ToList();
+
             var dbPath = ResolveDatabasePath(options.DatabasePath, repoRoot);
             var writer = new SqliteResultsWriter(dbPath);
-            await writer.WriteAsync(run, persistedFiles, normalizedFindings, PortabilityRuleDefinitions.Rules, cancellationToken: cancellationToken)
+            var ruleDefinitions = RuleCatalog.GetBuiltInDefinitions()
+                .Concat(config.Rules.CustomRules.Select(r => new RuleDefinition(r.Id, r.Title ?? r.Id, r.Severity, r.Description ?? r.Message)))
+                .GroupBy(r => r.RuleId, StringComparer.OrdinalIgnoreCase)
+                .Select(g => g.First())
+                .ToList();
+
+            await writer.WriteAsync(run, persistedFiles, normalizedFindings, ruleDefinitions, cancellationToken: cancellationToken)
                 .ConfigureAwait(false);
 
             await PrintSummaryAsync(output, run, dbPath, normalizedFindings).ConfigureAwait(false);
 
-            var shouldFail = normalizedFindings.Any(f => IsAtOrAboveSeverity(f.Severity, options.FailOnSeverity));
+            var failOn = ResolveFailOnSeverity(options.FailOnSeverity, config.ScanSettings);
+            var shouldFail = normalizedFindings.Any(f => IsAtOrAboveSeverity(f.Severity, failOn));
             return shouldFail ? 1 : 0;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -194,19 +227,73 @@ public static class PortabilityScanRunner
         return workers;
     }
 
-    private static IReadOnlyDictionary<string, string?> BuildAnalyzerConfiguration(string repoRoot, string? suppressionsPath)
+    private static IReadOnlyDictionary<string, string?> BuildAnalyzerConfiguration(string repoRoot, string? suppressionsPath, RuleConfigurationBundle mergedConfig)
     {
-        var config = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+        var settings = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
         {
             ["repoRoot"] = repoRoot
         };
 
         if (!string.IsNullOrWhiteSpace(suppressionsPath))
         {
-            config["suppressionsPath"] = Path.GetFullPath(suppressionsPath);
+            settings["suppressionsPath"] = Path.GetFullPath(suppressionsPath);
+        }
+        else if (mergedConfig.ScanSettings.TryGetValue("suppressionsPath", out var configuredSuppressionPath) &&
+                 !string.IsNullOrWhiteSpace(configuredSuppressionPath))
+        {
+            settings["suppressionsPath"] = Path.GetFullPath(configuredSuppressionPath);
         }
 
-        return config;
+        return settings;
+    }
+
+    private static RepoDiscoveryOptions BuildDiscoveryOptions(ScanConfig scanConfig)
+    {
+        return new RepoDiscoveryOptions(
+            UseGitIgnore: scanConfig.UseGitIgnore ?? true,
+            MaxFileSizeBytes: scanConfig.MaxFileSizeBytes ?? 2 * 1024 * 1024,
+            AdditionalExcludeDirectories: scanConfig.Excludes,
+            ExcludeDotDirectories: scanConfig.ExcludeDotDirectories ?? true,
+            ComputeContentHash: true);
+    }
+
+    private static FindingSeverity ResolveFailOnSeverity(FindingSeverity? cliFailOn, IReadOnlyDictionary<string, string> settings)
+    {
+        if (cliFailOn.HasValue)
+        {
+            return cliFailOn.Value;
+        }
+
+        if (settings.TryGetValue("portability.failOn", out var setting) &&
+            TryParseSeverity(setting, out var parsed))
+        {
+            return parsed;
+        }
+
+        return FindingSeverity.Error;
+    }
+
+    private static bool TryParseSeverity(string? value, out FindingSeverity severity)
+    {
+        severity = FindingSeverity.Error;
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        return value.Trim().ToLowerInvariant() switch
+        {
+            "error" => Assign(FindingSeverity.Error, out severity),
+            "warning" => Assign(FindingSeverity.Warning, out severity),
+            "info" => Assign(FindingSeverity.Info, out severity),
+            _ => false
+        };
+    }
+
+    private static bool Assign(FindingSeverity value, out FindingSeverity severity)
+    {
+        severity = value;
+        return true;
     }
 
     private static string ResolveDatabasePath(string? databasePath, string repoRoot)

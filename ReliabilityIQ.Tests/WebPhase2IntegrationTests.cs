@@ -36,6 +36,7 @@ public sealed class WebPhase2IntegrationTests : IDisposable
         var home = await client.GetAsync("/");
         var findings = await client.GetAsync($"/run/{Uri.EscapeDataString(_runId)}/findings");
         var summary = await client.GetAsync($"/run/{Uri.EscapeDataString(_runId)}/summary");
+        var deploy = await client.GetAsync($"/run/{Uri.EscapeDataString(_runId)}/deploy");
         var magicStrings = await client.GetAsync($"/run/{Uri.EscapeDataString(_runId)}/magic-strings");
         var heatmap = await client.GetAsync($"/run/{Uri.EscapeDataString(_runId)}/heatmap");
         var churn = await client.GetAsync($"/run/{Uri.EscapeDataString(_runId)}/churn");
@@ -44,10 +45,85 @@ public sealed class WebPhase2IntegrationTests : IDisposable
         Assert.Equal(HttpStatusCode.OK, home.StatusCode);
         Assert.Equal(HttpStatusCode.OK, findings.StatusCode);
         Assert.Equal(HttpStatusCode.OK, summary.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, deploy.StatusCode);
         Assert.Equal(HttpStatusCode.OK, magicStrings.StatusCode);
         Assert.Equal(HttpStatusCode.OK, heatmap.StatusCode);
         Assert.Equal(HttpStatusCode.OK, churn.StatusCode);
         Assert.Equal(HttpStatusCode.OK, fileDetail.StatusCode);
+    }
+
+    [Fact]
+    public async Task DeployApi_ReturnsDeploymentFindingsAndSupportsFilters()
+    {
+        await SeedDatabaseAsync();
+
+        using var factory = new TestWebApplicationFactory(_dbPath);
+        using var client = factory.CreateClient();
+
+        var uri = $"/api/run/{Uri.EscapeDataString(_runId)}/deploy?draw=11&start=0&length=25&order[0][column]=2&order[0][dir]=asc&columns[2][name]=severity&artifactType=EV2&subcategory=hardcoded-values&severity=Warning";
+        var response = await client.GetAsync(uri);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var root = json.RootElement;
+        Assert.Equal(11, root.GetProperty("draw").GetInt32());
+        Assert.True(root.GetProperty("recordsTotal").GetInt32() >= 2);
+        Assert.True(root.GetProperty("recordsFiltered").GetInt32() >= 1);
+
+        var data = root.GetProperty("data");
+        Assert.True(data.GetArrayLength() >= 1);
+        var first = data.EnumerateArray().First();
+        Assert.Equal("EV2", first.GetProperty("artifactType").GetString());
+        Assert.Equal("hardcoded-values", first.GetProperty("ruleSubcategory").GetString());
+        Assert.Equal("Warning", first.GetProperty("severity").GetString());
+        Assert.True(first.TryGetProperty("locationPath", out _));
+        Assert.True(first.TryGetProperty("ruleDescription", out _));
+    }
+
+    [Fact]
+    public async Task FindingsApi_ContainsDeployFindingsViaMainTable()
+    {
+        await SeedDatabaseAsync();
+
+        using var factory = new TestWebApplicationFactory(_dbPath);
+        using var client = factory.CreateClient();
+
+        var uri = $"/api/run/{Uri.EscapeDataString(_runId)}/findings?draw=4&start=0&length=25&order[0][column]=3&order[0][dir]=asc&columns[3][name]=ruleId&rulePrefix=deploy.";
+        var response = await client.GetAsync(uri);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var root = json.RootElement;
+        Assert.True(root.GetProperty("recordsFiltered").GetInt32() >= 2);
+        var ruleIds = root.GetProperty("data").EnumerateArray()
+            .Select(item => item.GetProperty("ruleId").GetString())
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .ToList();
+        Assert.All(ruleIds, ruleId => Assert.StartsWith("deploy.", ruleId, StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task FileDetail_ShowsDeploymentContext_ForDeploymentArtifactFiles()
+    {
+        await SeedDatabaseAsync();
+
+        long deployFileId;
+        await using (var connection = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = _dbPath }.ToString()))
+        {
+            await connection.OpenAsync();
+            deployFileId = await connection.ExecuteScalarAsync<long>(
+                "SELECT file_id FROM files WHERE run_id = @RunId AND path = @Path LIMIT 1;",
+                new { RunId = _runId, Path = "deploy/ev2/rollout.yaml" });
+        }
+
+        using var factory = new TestWebApplicationFactory(_dbPath);
+        using var client = factory.CreateClient();
+
+        var response = await client.GetAsync($"/run/{Uri.EscapeDataString(_runId)}/file/{deployFileId}");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var html = await response.Content.ReadAsStringAsync();
+        Assert.Contains("Deployment Context", html, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("$.rolloutSpec.subscriptionId", html, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -269,7 +345,8 @@ public sealed class WebPhase2IntegrationTests : IDisposable
         {
             new("src/program.cs", FileCategory.Source, 100, "hash-1", "csharp"),
             new("src/domain/status.cs", FileCategory.Source, 160, "hash-2", "csharp"),
-            new("src/payments/gateway.cs", FileCategory.Source, 140, "hash-3", "csharp")
+            new("src/payments/gateway.cs", FileCategory.Source, 140, "hash-3", "csharp"),
+            new("deploy/ev2/rollout.yaml", FileCategory.DeploymentArtifact, 180, "hash-4", "yaml")
         };
 
         var findings = new List<Finding>
@@ -329,6 +406,34 @@ public sealed class WebPhase2IntegrationTests : IDisposable
                 Confidence = FindingConfidence.Medium,
                 Fingerprint = "fp-web-4",
                 Metadata = """{"strategy":"exclude-detect-score-threshold","contextSummary":"languages=csharp;contexts=EqualsExpressionSyntax","scoring":{"frequencyScore":1.585,"usageBoost":1.5,"penalties":0.08,"magicScore":2.2},"topLocations":[{"file":"src/payments/gateway.cs","line":18,"column":20}],"allOccurrences":[{"file":"src/payments/gateway.cs","line":18,"column":20,"language":"csharp","astParent":"EqualsExpressionSyntax","callsite":"state ==","comparison":true,"conditional":true,"exception":false,"astConfirmed":true,"testCode":false,"raw":"pending_review"},{"file":"src/payments/gateway.cs","line":43,"column":28,"language":"csharp","astParent":"ArgumentSyntax","callsite":"MapState","comparison":false,"conditional":false,"exception":false,"astConfirmed":true,"testCode":false,"raw":"pending_review"}]}"""
+            },
+            new()
+            {
+                RunId = _runId,
+                RuleId = "deploy.ev2.hardcoded.subscription",
+                FilePath = "deploy/ev2/rollout.yaml",
+                Line = 3,
+                Column = 19,
+                Message = "EV2 Hardcoded Subscription: '11111111-1111-4111-8111-111111111111' at $.rolloutSpec.subscriptionId.",
+                Snippet = "subscriptionId: 11111111-1111-4111-8111-111111111111",
+                Severity = FindingSeverity.Warning,
+                Confidence = FindingConfidence.High,
+                Fingerprint = "fp-web-5",
+                Metadata = """{"engine":"artifact-structured","parserMode":"structured","artifactPath":"$.rolloutSpec.subscriptionId","matchedValue":"11111111-1111-4111-8111-111111111111"}"""
+            },
+            new()
+            {
+                RunId = _runId,
+                RuleId = "deploy.ev2.inline_secret",
+                FilePath = "deploy/ev2/rollout.yaml",
+                Line = 7,
+                Column = 15,
+                Message = "EV2 Inline Secret: 'plain-text-secret' at $.rolloutSpec.secret.",
+                Snippet = "secret: plain-text-secret",
+                Severity = FindingSeverity.Error,
+                Confidence = FindingConfidence.High,
+                Fingerprint = "fp-web-6",
+                Metadata = """{"engine":"artifact-structured","parserMode":"structured","artifactPath":"$.rolloutSpec.secret","matchedValue":"plain-text-secret"}"""
             }
         };
 
@@ -337,7 +442,9 @@ public sealed class WebPhase2IntegrationTests : IDisposable
             new("portability.hardcoded.dns", "Hardcoded DNS", FindingSeverity.Warning, "Use configuration for DNS names."),
             new("portability.hardcoded.endpoint", "Hardcoded Endpoint", FindingSeverity.Warning, "Replace hardcoded endpoint with IConfiguration lookup."),
             new("magic-string.comparison-used", "Comparison-driven magic string", FindingSeverity.Info, "Extract to enum or constant."),
-            new("magic-string.candidate", "Magic string candidate", FindingSeverity.Info, "Promote to configuration or typed constant.")
+            new("magic-string.candidate", "Magic string candidate", FindingSeverity.Info, "Promote to configuration or typed constant."),
+            new("deploy.ev2.hardcoded.subscription", "EV2 Hardcoded Subscription", FindingSeverity.Warning, "Parameterize subscription identifiers in EV2 artifacts instead of hardcoding concrete values."),
+            new("deploy.ev2.inline_secret", "EV2 Inline Secret", FindingSeverity.Error, "Replace inline secrets in EV2 artifacts with Key Vault references or secure variable resolution.")
         };
 
         var gitMetrics = new List<GitFileMetric>

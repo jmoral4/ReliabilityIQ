@@ -29,6 +29,7 @@
                 <ul class="navbar-nav me-auto mb-2 mb-lg-0">
                     <li class="nav-item"><a id="runsNav" class="nav-link" asp-page="/Index">Runs</a></li>
                     <li class="nav-item"><a id="findingsNav" class="nav-link" href="#">Findings</a></li>
+                    <li class="nav-item"><a id="deployNav" class="nav-link" href="#">Deploy</a></li>
                     <li class="nav-item"><a id="summaryNav" class="nav-link" href="#">Summary</a></li>
                     <li class="nav-item"><a id="magicStringsNav" class="nav-link" href="#">Magic Strings</a></li>
                     <li class="nav-item"><a id="heatmapNav" class="nav-link" href="#">Heatmap</a></li>
@@ -62,6 +63,7 @@
     (async function () {
         const runSelector = document.getElementById("runSelector");
         const findingsNav = document.getElementById("findingsNav");
+        const deployNav = document.getElementById("deployNav");
         const summaryNav = document.getElementById("summaryNav");
         const magicStringsNav = document.getElementById("magicStringsNav");
         const heatmapNav = document.getElementById("heatmapNav");
@@ -72,6 +74,7 @@
         function setActiveNav() {
             runsNav.classList.toggle("active", path === "/");
             findingsNav.classList.toggle("active", /\/run\/[^/]+\/(findings|file\/\d+)$/i.test(path));
+            deployNav.classList.toggle("active", /\/run\/[^/]+\/deploy$/i.test(path));
             summaryNav.classList.toggle("active", /\/run\/[^/]+\/summary$/i.test(path));
             magicStringsNav.classList.toggle("active", /\/run\/[^/]+\/magic-strings$/i.test(path));
             heatmapNav.classList.toggle("active", /\/run\/[^/]+\/heatmap$/i.test(path));
@@ -86,6 +89,7 @@
         function updateRunLinks(runId) {
             if (!runId) {
                 findingsNav.setAttribute("href", "#");
+                deployNav.setAttribute("href", "#");
                 summaryNav.setAttribute("href", "#");
                 magicStringsNav.setAttribute("href", "#");
                 heatmapNav.setAttribute("href", "#");
@@ -95,6 +99,7 @@
 
             const encoded = encodeURIComponent(runId);
             findingsNav.setAttribute("href", `/run/${encoded}/findings`);
+            deployNav.setAttribute("href", `/run/${encoded}/deploy`);
             summaryNav.setAttribute("href", `/run/${encoded}/summary`);
             magicStringsNav.setAttribute("href", `/run/${encoded}/magic-strings`);
             heatmapNav.setAttribute("href", `/run/${encoded}/heatmap`);
@@ -110,6 +115,11 @@
 
             if (/\/run\/[^/]+\/summary$/i.test(path)) {
                 window.location.href = `/run/${encoded}/summary`;
+                return;
+            }
+
+            if (/\/run\/[^/]+\/deploy$/i.test(path)) {
+                window.location.href = `/run/${encoded}/deploy`;
                 return;
             }
 

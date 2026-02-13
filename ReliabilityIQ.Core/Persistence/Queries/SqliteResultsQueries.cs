@@ -292,6 +292,218 @@ public sealed class SqliteResultsQueries
         return rows.ToList();
     }
 
+    public async Task<DeployFindingsPage> GetDeployFindings(
+        string runId,
+        DeployFindingsQueryRequest? request = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(runId);
+
+        var effectiveRequest = request ?? DeployFindingsQueryRequest.Default;
+        var safeLimit = Math.Clamp(effectiveRequest.Limit, 1, 500);
+        var safeOffset = Math.Max(effectiveRequest.Offset, 0);
+        var filters = effectiveRequest.Filters ?? new DeployFindingsQueryFilters();
+
+        var whereClause = "f.run_id = @RunId AND f.rule_id LIKE 'deploy.%'";
+        var parameters = new DynamicParameters();
+        parameters.Add("RunId", runId);
+
+        if (!string.IsNullOrWhiteSpace(filters.ArtifactType))
+        {
+            whereClause += " AND " + GetArtifactTypeSqlExpression() + " = @ArtifactType";
+            parameters.Add("ArtifactType", filters.ArtifactType.Trim());
+        }
+
+        if (!string.IsNullOrWhiteSpace(filters.RuleSubcategory))
+        {
+            whereClause += " AND " + GetDeploySubcategorySqlExpression() + " = @RuleSubcategory";
+            parameters.Add("RuleSubcategory", filters.RuleSubcategory.Trim());
+        }
+
+        if (!string.IsNullOrWhiteSpace(filters.Severity))
+        {
+            whereClause += " AND f.severity = @Severity";
+            parameters.Add("Severity", filters.Severity.Trim());
+        }
+
+        if (!filters.IncludeSuppressed)
+        {
+            whereClause += " AND NOT (COALESCE(f.metadata, '') LIKE '%\"suppressed\":true%' OR COALESCE(f.metadata, '') LIKE '%\"isSuppressed\":true%')";
+        }
+
+        var totalSql = "SELECT COUNT(*) FROM findings WHERE run_id = @RunId AND rule_id LIKE 'deploy.%';";
+        var filteredSql = $"""
+                           SELECT COUNT(*)
+                           FROM findings f
+                           INNER JOIN files fl ON fl.file_id = f.file_id
+                           WHERE {whereClause};
+                           """;
+
+        var sortColumn = GetDeploySortColumn(effectiveRequest.SortField);
+        var sortDirection = effectiveRequest.SortDescending ? "DESC" : "ASC";
+
+        var pageSql = $"""
+                       SELECT
+                           f.finding_id AS FindingId,
+                           f.file_id AS FileId,
+                           {GetArtifactTypeSqlExpression()} AS ArtifactType,
+                           {GetDeploySubcategorySqlExpression()} AS RuleSubcategory,
+                           f.rule_id AS RuleId,
+                           COALESCE(r.title, f.rule_id) AS RuleTitle,
+                           COALESCE(r.description, '') AS RuleDescription,
+                           f.file_path AS FilePath,
+                           f.line AS Line,
+                           f."column" AS "Column",
+                           f.severity AS Severity,
+                           f.message AS Message,
+                           f.snippet AS Snippet,
+                           {GetArtifactPathSqlExpression()} AS LocationPath,
+                           f.metadata AS Metadata,
+                           CASE
+                               WHEN COALESCE(f.metadata, '') LIKE '%\"suppressed\":true%' OR COALESCE(f.metadata, '') LIKE '%\"isSuppressed\":true%' THEN 1
+                               ELSE 0
+                           END AS IsSuppressed
+                       FROM findings f
+                       INNER JOIN files fl ON fl.file_id = f.file_id
+                       LEFT JOIN rules r ON r.rule_id = f.rule_id
+                       WHERE {whereClause}
+                       ORDER BY {sortColumn} {sortDirection}, f.finding_id ASC
+                       LIMIT @Limit OFFSET @Offset;
+                       """;
+
+        parameters.Add("Limit", safeLimit);
+        parameters.Add("Offset", safeOffset);
+
+        await using var connection = _connectionFactory();
+        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+
+        var totalCount = await connection.ExecuteScalarAsync<int>(
+            new CommandDefinition(totalSql, new { RunId = runId }, cancellationToken: cancellationToken)).ConfigureAwait(false);
+
+        var filteredCount = await connection.ExecuteScalarAsync<int>(
+            new CommandDefinition(filteredSql, parameters, cancellationToken: cancellationToken)).ConfigureAwait(false);
+
+        var items = await connection.QueryAsync<DeployFindingListItem>(
+            new CommandDefinition(pageSql, parameters, cancellationToken: cancellationToken)).ConfigureAwait(false);
+
+        return new DeployFindingsPage(totalCount, filteredCount, items.ToList());
+    }
+
+    public async Task<IReadOnlyList<DeploymentSeveritySummaryItem>> GetDeploymentSeveritySummary(
+        string runId,
+        bool includeSuppressed = false,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(runId);
+
+        var suppressionClause = includeSuppressed
+            ? string.Empty
+            : "AND NOT (COALESCE(f.metadata, '') LIKE '%\"suppressed\":true%' OR COALESCE(f.metadata, '') LIKE '%\"isSuppressed\":true%')";
+
+        var sql = $"""
+                   SELECT
+                       {GetArtifactTypeSqlExpression()} AS ArtifactType,
+                       COALESCE(SUM(CASE WHEN f.severity = 'Error' THEN 1 ELSE 0 END), 0) AS ErrorCount,
+                       COALESCE(SUM(CASE WHEN f.severity = 'Warning' THEN 1 ELSE 0 END), 0) AS WarningCount,
+                       COALESCE(SUM(CASE WHEN f.severity = 'Info' THEN 1 ELSE 0 END), 0) AS InfoCount
+                   FROM findings f
+                   INNER JOIN files fl ON fl.file_id = f.file_id
+                   WHERE f.run_id = @RunId
+                     AND f.rule_id LIKE 'deploy.%'
+                     {suppressionClause}
+                   GROUP BY {GetArtifactTypeSqlExpression()}
+                   ORDER BY ArtifactType ASC;
+                   """;
+
+        await using var connection = _connectionFactory();
+        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+
+        var rows = await connection.QueryAsync<DeploymentSeveritySummaryItem>(
+            new CommandDefinition(sql, new { RunId = runId }, cancellationToken: cancellationToken)).ConfigureAwait(false);
+
+        return rows.ToList();
+    }
+
+    public async Task<IReadOnlyList<DeploymentArtifactRiskItem>> GetTopDeploymentArtifactsByRisk(
+        string runId,
+        int limit = 5,
+        bool includeSuppressed = false,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(runId);
+        var safeLimit = Math.Clamp(limit, 1, 100);
+
+        var suppressionClause = includeSuppressed
+            ? string.Empty
+            : "AND NOT (COALESCE(f.metadata, '') LIKE '%\"suppressed\":true%' OR COALESCE(f.metadata, '') LIKE '%\"isSuppressed\":true%')";
+
+        var sql = $"""
+                   SELECT
+                       f.file_id AS FileId,
+                       f.file_path AS FilePath,
+                       {GetArtifactTypeSqlExpression()} AS ArtifactType,
+                       COALESCE(SUM(CASE WHEN f.severity = 'Error' THEN 1 ELSE 0 END), 0) AS ErrorCount,
+                       COALESCE(SUM(CASE WHEN f.severity = 'Warning' THEN 1 ELSE 0 END), 0) AS WarningCount,
+                       COALESCE(SUM(CASE WHEN f.severity = 'Info' THEN 1 ELSE 0 END), 0) AS InfoCount,
+                       COALESCE(SUM(CASE
+                           WHEN f.severity = 'Error' THEN 5
+                           WHEN f.severity = 'Warning' THEN 2
+                           ELSE 1
+                       END), 0) AS RiskScore
+                   FROM findings f
+                   INNER JOIN files fl ON fl.file_id = f.file_id
+                   WHERE f.run_id = @RunId
+                     AND f.rule_id LIKE 'deploy.%'
+                     {suppressionClause}
+                   GROUP BY f.file_id, f.file_path, {GetArtifactTypeSqlExpression()}
+                   ORDER BY RiskScore DESC, f.file_path ASC
+                   LIMIT @Limit;
+                   """;
+
+        await using var connection = _connectionFactory();
+        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+
+        var rows = await connection.QueryAsync<DeploymentArtifactRiskRow>(
+            new CommandDefinition(sql, new { RunId = runId, Limit = safeLimit }, cancellationToken: cancellationToken)).ConfigureAwait(false);
+
+        return rows.Select(row => new DeploymentArtifactRiskItem(
+            row.FileId,
+            row.FilePath,
+            row.ArtifactType,
+            ToLong(row.ErrorCount),
+            ToLong(row.WarningCount),
+            ToLong(row.InfoCount),
+            ToDouble(row.RiskScore))).ToList();
+    }
+
+    public async Task<long> GetDeploymentParameterizationOpportunityCount(
+        string runId,
+        bool includeSuppressed = false,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(runId);
+
+        var suppressionClause = includeSuppressed
+            ? string.Empty
+            : "AND NOT (COALESCE(f.metadata, '') LIKE '%\"suppressed\":true%' OR COALESCE(f.metadata, '') LIKE '%\"isSuppressed\":true%')";
+
+        var sql = $"""
+                   SELECT COUNT(*)
+                   FROM findings f
+                   INNER JOIN files fl ON fl.file_id = f.file_id
+                   WHERE f.run_id = @RunId
+                     AND f.rule_id LIKE 'deploy.%'
+                     AND {GetDeploySubcategorySqlExpression()} = 'hardcoded-values'
+                     {suppressionClause};
+                   """;
+
+        await using var connection = _connectionFactory();
+        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+
+        return await connection.ExecuteScalarAsync<long>(
+            new CommandDefinition(sql, new { RunId = runId }, cancellationToken: cancellationToken)).ConfigureAwait(false);
+    }
+
     public async Task<IReadOnlyList<FileSummaryItem>> GetFileSummary(string runId, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(runId);
@@ -750,9 +962,9 @@ public sealed class SqliteResultsQueries
                                fl.file_id AS FileId,
                                fl.path AS FilePath,
                                fl.size_bytes AS SizeBytes,
-                               COALESCE(g.churn_score, 0) AS ChurnScore,
-                               COALESCE(g.stale_score, 0) AS StaleScore,
-                               COALESCE(g.ownership_concentration, 0) AS OwnershipRisk,
+                               COALESCE(g.churn_score, 0.0) AS ChurnScore,
+                               COALESCE(g.stale_score, 0.0) AS StaleScore,
+                               COALESCE(g.ownership_concentration, 0.0) AS OwnershipRisk,
                                COALESCE(pf.PortabilityFindingCount, 0) AS PortabilityFindingCount,
                                COALESCE(tf.FindingCount, 0) AS FindingCount
                            FROM files fl
@@ -1023,6 +1235,54 @@ public sealed class SqliteResultsQueries
         _ => "g.churn_score"
     };
 
+    private static string GetDeploySortColumn(DeployFindingsSortField sortField) => sortField switch
+    {
+        DeployFindingsSortField.ArtifactType => GetArtifactTypeSqlExpression(),
+        DeployFindingsSortField.Severity => "CASE f.severity WHEN 'Error' THEN 0 WHEN 'Warning' THEN 1 ELSE 2 END",
+        DeployFindingsSortField.RuleId => "f.rule_id",
+        DeployFindingsSortField.FilePath => "f.file_path",
+        DeployFindingsSortField.LocationPath => GetArtifactPathSqlExpression(),
+        _ => "CASE f.severity WHEN 'Error' THEN 0 WHEN 'Warning' THEN 1 ELSE 2 END"
+    };
+
+    private static string GetArtifactTypeSqlExpression()
+    {
+        return """
+               CASE
+                   WHEN f.rule_id LIKE 'deploy.ev2.%' THEN 'EV2'
+                   WHEN f.rule_id LIKE 'deploy.ado.%' THEN 'ADO'
+                   WHEN lower(f.file_path) LIKE '%/ev2/%' OR lower(f.file_path) LIKE '%rollout%' OR lower(f.file_path) LIKE '%service-model%' THEN 'EV2'
+                   WHEN lower(f.file_path) LIKE '%pipeline%' OR lower(f.file_path) LIKE '%/.azuredevops/%' OR lower(f.file_path) LIKE '%/ado/%' THEN 'ADO'
+                   ELSE 'Unknown'
+               END
+               """;
+    }
+
+    private static string GetDeploySubcategorySqlExpression()
+    {
+        return """
+               CASE
+                   WHEN f.rule_id LIKE 'deploy.%.inline_secret' THEN 'inline-secrets'
+                   WHEN f.rule_id LIKE 'deploy.%.hardcoded.%' OR f.rule_id LIKE 'deploy.%.env_constant' THEN 'hardcoded-values'
+                   ELSE 'missing-safety'
+               END
+               """;
+    }
+
+    private static string GetArtifactPathSqlExpression()
+    {
+        return """
+               CASE
+                   WHEN COALESCE(f.metadata, '') LIKE '%\"artifactPath\":\"%' THEN
+                       substr(
+                           f.metadata,
+                           instr(f.metadata, '\"artifactPath\":\"') + length('\"artifactPath\":\"'),
+                           instr(substr(f.metadata, instr(f.metadata, '\"artifactPath\":\"') + length('\"artifactPath\":\"')), '\"') - 1)
+                   ELSE '$'
+               END
+               """;
+    }
+
     private static RunListItem MapRunListItem(RunRow row) => new(
         row.RunId,
         row.RepoRoot,
@@ -1082,6 +1342,22 @@ public sealed class SqliteResultsQueries
             string stringValue when long.TryParse(stringValue, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed) => parsed,
             byte[] bytes => ParseLong(bytes),
             _ => Convert.ToInt64(value, CultureInfo.InvariantCulture)
+        };
+    }
+
+    private static double ToDouble(object? value)
+    {
+        return value switch
+        {
+            null => 0d,
+            double doubleValue => doubleValue,
+            float floatValue => floatValue,
+            decimal decimalValue => (double)decimalValue,
+            long longValue => longValue,
+            int intValue => intValue,
+            string stringValue when double.TryParse(stringValue, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed) => parsed,
+            byte[] bytes => double.Parse(Encoding.UTF8.GetString(bytes), NumberStyles.Float, CultureInfo.InvariantCulture),
+            _ => Convert.ToDouble(value, CultureInfo.InvariantCulture)
         };
     }
 
@@ -1193,5 +1469,22 @@ public sealed class SqliteResultsQueries
         public object? WarningCount { get; set; }
 
         public object? InfoCount { get; set; }
+    }
+
+    private sealed class DeploymentArtifactRiskRow
+    {
+        public long FileId { get; set; }
+
+        public string FilePath { get; set; } = string.Empty;
+
+        public string ArtifactType { get; set; } = string.Empty;
+
+        public object? ErrorCount { get; set; }
+
+        public object? WarningCount { get; set; }
+
+        public object? InfoCount { get; set; }
+
+        public object? RiskScore { get; set; }
     }
 }

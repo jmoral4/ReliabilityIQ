@@ -1,6 +1,7 @@
 using ReliabilityIQ.Analyzers.Artifacts;
 using ReliabilityIQ.Core;
 using ReliabilityIQ.Core.Artifacts;
+using ReliabilityIQ.Core.Configuration;
 using ReliabilityIQ.Core.Discovery;
 using ReliabilityIQ.Core.Persistence;
 
@@ -31,16 +32,48 @@ public static class DeployScanRunner
 
             var startedAt = DateTimeOffset.UtcNow;
             var repoRoot = RepoDiscovery.FindRepoRoot(options.RepoPath);
-            var deploymentMarkers = MergeMarkers(options.Ev2PathMarkers, options.AdoPathMarkers);
+            var config = RuleConfigurationLoader.LoadForRepo(
+                repoRoot,
+                new CliRuleOverrides(
+                    PortabilityFailOn: null,
+                    MagicMinOccurrences: null,
+                    MagicTop: null,
+                    ChurnSinceDays: null,
+                    DeployEv2PathMarkers: SplitMarkers(options.Ev2PathMarkers).ToList(),
+                    DeployAdoPathMarkers: SplitMarkers(options.AdoPathMarkers).ToList()));
+
+            var effectiveEv2Markers = options.Ev2PathMarkers;
+            if (string.IsNullOrWhiteSpace(effectiveEv2Markers) &&
+                config.ScanSettings.TryGetValue("deploy.ev2.pathMarkers", out var configuredEv2))
+            {
+                effectiveEv2Markers = configuredEv2;
+            }
+
+            var effectiveAdoMarkers = options.AdoPathMarkers;
+            if (string.IsNullOrWhiteSpace(effectiveAdoMarkers) &&
+                config.ScanSettings.TryGetValue("deploy.ado.pathMarkers", out var configuredAdo))
+            {
+                effectiveAdoMarkers = configuredAdo;
+            }
+
+            var deploymentMarkers = MergeMarkers(effectiveEv2Markers, effectiveAdoMarkers);
             var classifier = new FileClassifier(deploymentMarkers);
-            var files = RepoDiscovery.DiscoverFiles(repoRoot, classifier);
+            var files = RepoDiscovery.DiscoverFiles(
+                repoRoot,
+                classifier,
+                new RepoDiscoveryOptions(
+                    UseGitIgnore: config.Scan.UseGitIgnore ?? true,
+                    MaxFileSizeBytes: config.Scan.MaxFileSizeBytes ?? 2 * 1024 * 1024,
+                    AdditionalExcludeDirectories: config.Scan.Excludes,
+                    ExcludeDotDirectories: config.Scan.ExcludeDotDirectories ?? true,
+                    ComputeContentHash: true));
 
             var analyzer = new ArtifactAnalyzer();
             var analyzerConfig = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
             {
                 ["repoRoot"] = repoRoot,
-                ["deploy.ev2.pathMarkers"] = options.Ev2PathMarkers,
-                ["deploy.ado.pathMarkers"] = options.AdoPathMarkers
+                ["deploy.ev2.pathMarkers"] = effectiveEv2Markers,
+                ["deploy.ado.pathMarkers"] = effectiveAdoMarkers
             };
 
             var findings = new List<Finding>();
@@ -84,6 +117,12 @@ public static class DeployScanRunner
                 Language: file.Language)).ToList();
 
             var normalizedFindings = findings
+                .Select(f => f with { RunId = runId })
+                .OrderBy(f => f.FilePath, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(f => f.Line)
+                .ThenBy(f => f.Column)
+                .ToList();
+            normalizedFindings = FindingPolicyEngine.Apply(normalizedFindings, config)
                 .Select(f => f with { RunId = runId })
                 .OrderBy(f => f.FilePath, StringComparer.OrdinalIgnoreCase)
                 .ThenBy(f => f.Line)

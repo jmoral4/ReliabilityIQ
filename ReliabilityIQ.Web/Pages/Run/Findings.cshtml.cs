@@ -16,6 +16,9 @@ public sealed class FindingsModel : PageModel
     [BindProperty(SupportsGet = true)]
     public string RunId { get; set; } = string.Empty;
 
+    [BindProperty(SupportsGet = true)]
+    public string? RulePrefix { get; set; }
+
     public RunDetails? Run { get; private set; }
 
     public IReadOnlyList<RuleSummaryItem> RuleSummary { get; private set; } = Array.Empty<RuleSummaryItem>();
