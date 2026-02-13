@@ -1,0 +1,237 @@
+@page "/run/{runId}/dependencies"
+@model ReliabilityIQ.Web.Pages.Run.DependenciesModel
+@{
+    ViewData["Title"] = "Dependencies";
+}
+
+@if (Model.Run is null)
+{
+    <div class="alert alert-warning" role="alert">Run not found.</div>
+}
+else
+{
+    <section class="mb-3">
+        <h1 class="h3 mb-1">Dependency Health</h1>
+        <div class="small text-body-secondary">
+            <span class="font-monospace">@Model.Run.RunId</span>
+            <span class="mx-2">|</span>
+            <span class="font-monospace">@Model.Run.RepoRoot</span>
+            <span class="mx-2">|</span>
+            <a asp-page="/Run/Findings" asp-route-runId="@Model.RunId" asp-route-rulePrefix="deps." class="link-secondary">Open in Findings</a>
+        </div>
+    </section>
+
+    <div id="eolBannerHost"></div>
+
+    <div class="row g-3 mb-3">
+        <aside class="col-12 col-lg-3">
+            <div class="card">
+                <div class="card-body">
+                    <h2 class="h6 text-uppercase text-body-secondary">Filters</h2>
+                    <div class="mb-3">
+                        <label for="searchFilter" class="form-label">Search package</label>
+                        <input id="searchFilter" type="text" class="form-control form-control-sm" placeholder="Newtonsoft.Json" />
+                    </div>
+                    <div class="mb-3">
+                        <label for="pinnedFilter" class="form-label">Pinned</label>
+                        <select id="pinnedFilter" class="form-select form-select-sm">
+                            <option value="">All</option>
+                            <option value="yes">Pinned</option>
+                            <option value="no">Unpinned</option>
+                        </select>
+                    </div>
+                    <div class="form-check mb-2">
+                        <input id="cveOnlyFilter" class="form-check-input" type="checkbox" />
+                        <label for="cveOnlyFilter" class="form-check-label">Only packages with CVEs</label>
+                    </div>
+                    <div class="form-check mb-3">
+                        <input id="eolOnlyFilter" class="form-check-input" type="checkbox" />
+                        <label for="eolOnlyFilter" class="form-check-label">Only EOL packages</label>
+                    </div>
+                    <div class="mb-3">
+                        <label for="sortBy" class="form-label">Sort By</label>
+                        <select id="sortBy" class="form-select form-select-sm">
+                            <option value="cveSeverity">CVE Severity</option>
+                            <option value="staleness">Staleness</option>
+                            <option value="name">Name</option>
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label for="sortDir" class="form-label">Direction</label>
+                        <select id="sortDir" class="form-select form-select-sm">
+                            <option value="desc">Descending</option>
+                            <option value="asc">Ascending</option>
+                        </select>
+                    </div>
+                    <button id="applyFilters" type="button" class="btn btn-sm btn-primary w-100">Apply Filters</button>
+                </div>
+            </div>
+        </aside>
+
+        <div class="col-12 col-lg-9">
+            <div class="card mb-3">
+                <div class="card-body py-2 d-flex gap-3 flex-wrap small" id="dependencySummary"></div>
+            </div>
+
+            <div class="table-responsive">
+                <table class="table table-striped table-hover align-middle" id="dependencyTable">
+                    <thead>
+                    <tr>
+                        <th></th>
+                        <th>Package</th>
+                        <th>Ecosystem</th>
+                        <th>Current Version</th>
+                        <th>Latest Version</th>
+                        <th>Pinned</th>
+                        <th>CVEs</th>
+                        <th>Highest Severity</th>
+                        <th>EOL</th>
+                    </tr>
+                    </thead>
+                    <tbody id="dependencyBody"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+}
+
+@section Scripts
+{
+    <script>
+        function escapeHtml(value) {
+            if (!value) return "";
+            return String(value)
+                .replaceAll("&", "&amp;")
+                .replaceAll("<", "&lt;")
+                .replaceAll(">", "&gt;")
+                .replaceAll('"', "&quot;")
+                .replaceAll("'", "&#39;");
+        }
+
+        function severityBadge(severity) {
+            if (severity === "Critical") return '<span class="badge text-bg-danger">Critical</span>';
+            if (severity === "High") return '<span class="badge text-bg-warning text-dark">High</span>';
+            if (severity === "Medium") return '<span class="badge text-bg-info text-dark">Medium</span>';
+            return '<span class="badge text-bg-secondary">None</span>';
+        }
+
+        function renderEolBanner(frameworks) {
+            const host = document.getElementById("eolBannerHost");
+            if (!Array.isArray(frameworks) || frameworks.length === 0) {
+                host.innerHTML = "";
+                return;
+            }
+
+            const items = frameworks
+                .map(item => `<li><span class="font-monospace">${escapeHtml(item.framework)}</span>: ${escapeHtml(item.reason || "EOL framework detected.")}</li>`)
+                .join("");
+
+            host.innerHTML = `<div class="alert alert-danger" role="alert">
+                <div class="fw-semibold mb-1">EOL Framework Warning</div>
+                <ul class="mb-0">${items}</ul>
+            </div>`;
+        }
+
+        function renderSummary(packages, frameworks) {
+            const cvePackages = packages.filter(item => Number(item.cveCount || 0) > 0).length;
+            const unpinned = packages.filter(item => !item.pinned).length;
+            document.getElementById("dependencySummary").innerHTML = `
+                <div><span class="badge text-bg-secondary">Packages ${packages.length}</span></div>
+                <div><span class="badge text-bg-danger">With CVEs ${cvePackages}</span></div>
+                <div><span class="badge text-bg-warning text-dark">Unpinned ${unpinned}</span></div>
+                <div><span class="badge text-bg-dark">EOL Frameworks ${frameworks.length}</span></div>`;
+        }
+
+        async function loadDependencies(runId) {
+            const search = document.getElementById("searchFilter").value;
+            const pinned = document.getElementById("pinnedFilter").value;
+            const cveOnly = document.getElementById("cveOnlyFilter").checked;
+            const eolOnly = document.getElementById("eolOnlyFilter").checked;
+            const sortBy = document.getElementById("sortBy").value;
+            const sortDesc = document.getElementById("sortDir").value === "desc";
+
+            const url = new URL(`/api/run/${encodeURIComponent(runId)}/dependencies`, window.location.origin);
+            if (search) url.searchParams.set("search", search);
+            if (pinned) url.searchParams.set("pinned", pinned);
+            if (cveOnly) url.searchParams.set("cveOnly", "true");
+            if (eolOnly) url.searchParams.set("eolOnly", "true");
+            url.searchParams.set("sortBy", sortBy);
+            url.searchParams.set("desc", String(sortDesc));
+
+            const response = await fetch(url, { headers: { "Accept": "application/json" } });
+            if (!response.ok) {
+                renderError(`Unable to load dependencies (HTTP ${response.status}).`);
+                return;
+            }
+
+            const payload = await response.json();
+            const packages = Array.isArray(payload.packages) ? payload.packages : [];
+            const frameworks = Array.isArray(payload.eolFrameworks) ? payload.eolFrameworks : [];
+
+            renderEolBanner(frameworks);
+            renderSummary(packages, frameworks);
+            renderRows(packages);
+        }
+
+        function renderError(message) {
+            document.getElementById("dependencyBody").innerHTML = `<tr><td colspan="9" class="text-body-secondary">${escapeHtml(message)}</td></tr>`;
+        }
+
+        function renderRows(packages) {
+            const tbody = document.getElementById("dependencyBody");
+            if (!Array.isArray(packages) || packages.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="9" class="text-body-secondary">No dependency findings for this run.</td></tr>';
+                return;
+            }
+
+            const html = [];
+            packages.forEach((row, index) => {
+                const detailId = `dep-cve-${index}`;
+                const hasVulns = Array.isArray(row.vulnerabilities) && row.vulnerabilities.length > 0;
+
+                html.push(`<tr>
+                    <td>${hasVulns ? `<button type="button" class="btn btn-sm btn-outline-secondary" data-bs-toggle="collapse" data-bs-target="#${detailId}" aria-expanded="false" aria-controls="${detailId}">Details</button>` : ""}</td>
+                    <td class="font-monospace small">${escapeHtml(row.name)}</td>
+                    <td>${escapeHtml(row.ecosystem || "Unknown")}</td>
+                    <td class="font-monospace">${escapeHtml(row.currentVersion || "n/a")}</td>
+                    <td class="font-monospace">${escapeHtml(row.latestVersion || "n/a")}</td>
+                    <td>${row.pinned ? '<span class="badge text-bg-success">yes</span>' : '<span class="badge text-bg-danger">no</span>'}</td>
+                    <td>${Number(row.cveCount || 0)}</td>
+                    <td>${severityBadge(row.highestSeverity || "None")}</td>
+                    <td>${row.eolStatus ? '<span class="badge text-bg-danger">yes</span>' : '<span class="badge text-bg-secondary">no</span>'}</td>
+                </tr>`);
+
+                if (hasVulns) {
+                    const vulnerabilities = row.vulnerabilities.map(v => `<tr>
+                        <td class="font-monospace">${escapeHtml(v.id)}</td>
+                        <td>${severityBadge(v.severity || "Medium")}</td>
+                        <td>${escapeHtml(v.summary || "No summary provided.")}</td>
+                    </tr>`).join("");
+
+                    html.push(`<tr class="collapse" id="${detailId}"><td colspan="9" class="p-0">
+                        <div class="p-3 bg-body-tertiary border-top border-bottom">
+                            <div class="fw-semibold mb-2">CVE Details</div>
+                            <div class="table-responsive">
+                                <table class="table table-sm mb-0">
+                                    <thead><tr><th>ID</th><th>Severity</th><th>Summary</th></tr></thead>
+                                    <tbody>${vulnerabilities}</tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </td></tr>`);
+                }
+            });
+
+            tbody.innerHTML = html.join("");
+        }
+
+        (async function () {
+            const runId = "@Model.RunId";
+            await loadDependencies(runId);
+
+            document.getElementById("applyFilters").addEventListener("click", async function () {
+                await loadDependencies(runId);
+            });
+        })();
+    </script>
+}

@@ -39,6 +39,8 @@ public sealed class WebPhase2IntegrationTests : IDisposable
         var findings = await client.GetAsync($"/run/{Uri.EscapeDataString(_runId)}/findings");
         var summary = await client.GetAsync($"/run/{Uri.EscapeDataString(_runId)}/summary");
         var deploy = await client.GetAsync($"/run/{Uri.EscapeDataString(_runId)}/deploy");
+        var configDrift = await client.GetAsync($"/run/{Uri.EscapeDataString(_runId)}/config-drift");
+        var dependencies = await client.GetAsync($"/run/{Uri.EscapeDataString(_runId)}/dependencies");
         var magicStrings = await client.GetAsync($"/run/{Uri.EscapeDataString(_runId)}/magic-strings");
         var heatmap = await client.GetAsync($"/run/{Uri.EscapeDataString(_runId)}/heatmap");
         var churn = await client.GetAsync($"/run/{Uri.EscapeDataString(_runId)}/churn");
@@ -52,6 +54,8 @@ public sealed class WebPhase2IntegrationTests : IDisposable
         Assert.Equal(HttpStatusCode.OK, findings.StatusCode);
         Assert.Equal(HttpStatusCode.OK, summary.StatusCode);
         Assert.Equal(HttpStatusCode.OK, deploy.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, configDrift.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, dependencies.StatusCode);
         Assert.Equal(HttpStatusCode.OK, magicStrings.StatusCode);
         Assert.Equal(HttpStatusCode.OK, heatmap.StatusCode);
         Assert.Equal(HttpStatusCode.OK, churn.StatusCode);
@@ -309,6 +313,57 @@ public sealed class WebPhase2IntegrationTests : IDisposable
     }
 
     [Fact]
+    public async Task ConfigDriftApi_ReturnsMatrixAndMissingStatus()
+    {
+        await SeedDatabaseAsync();
+
+        using var factory = new TestWebApplicationFactory(_dbPath);
+        using var client = factory.CreateClient();
+
+        var response = await client.GetAsync(
+            $"/api/run/{Uri.EscapeDataString(_runId)}/config-drift/matrix?issuesOnly=true&sortBy=missing&desc=true&search=ConnectionStrings");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var root = json.RootElement;
+        Assert.True(root.GetProperty("totalRows").GetInt32() >= 1);
+        Assert.True(root.GetProperty("filteredRows").GetInt32() >= 1);
+        Assert.True(root.GetProperty("environments").GetArrayLength() >= 2);
+
+        var first = root.GetProperty("data").EnumerateArray().First();
+        Assert.True(first.TryGetProperty("configSet", out _));
+        Assert.True(first.TryGetProperty("key", out _));
+        Assert.True(first.TryGetProperty("cells", out var cells));
+        Assert.True(cells.EnumerateArray().Any(cell => cell.GetProperty("status").GetString() == "missing"));
+    }
+
+    [Fact]
+    public async Task DependenciesApi_ReturnsPackagesWithCveAndEolData_AndSupportsSortingAndFiltering()
+    {
+        await SeedDatabaseAsync();
+
+        using var factory = new TestWebApplicationFactory(_dbPath);
+        using var client = factory.CreateClient();
+
+        var response = await client.GetAsync(
+            $"/api/run/{Uri.EscapeDataString(_runId)}/dependencies?sortBy=cveSeverity&desc=true&cveOnly=true&pinned=yes");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var root = json.RootElement;
+        Assert.True(root.GetProperty("totalPackages").GetInt32() >= 2);
+        Assert.True(root.GetProperty("filteredPackages").GetInt32() >= 1);
+        Assert.True(root.GetProperty("eolFrameworks").GetArrayLength() >= 1);
+
+        var first = root.GetProperty("packages").EnumerateArray().First();
+        Assert.True(first.GetProperty("pinned").GetBoolean());
+        Assert.True(first.GetProperty("cveCount").GetInt32() >= 1);
+        Assert.True(first.TryGetProperty("highestSeverity", out _));
+        Assert.True(first.TryGetProperty("vulnerabilities", out var vulns));
+        Assert.True(vulns.GetArrayLength() >= 1);
+    }
+
+    [Fact]
     public async Task HeatmapApis_ReturnTreeAndDirectoryDrilldown()
     {
         await SeedDatabaseAsync();
@@ -475,7 +530,11 @@ public sealed class WebPhase2IntegrationTests : IDisposable
             new("src/program.cs", FileCategory.Source, 100, "hash-1", "csharp"),
             new("src/domain/status.cs", FileCategory.Source, 160, "hash-2", "csharp"),
             new("src/payments/gateway.cs", FileCategory.Source, 140, "hash-3", "csharp"),
-            new("deploy/ev2/rollout.yaml", FileCategory.DeploymentArtifact, 180, "hash-4", "yaml")
+            new("deploy/ev2/rollout.yaml", FileCategory.DeploymentArtifact, 180, "hash-4", "yaml"),
+            new("config/app.dev.json", FileCategory.Config, 120, "hash-5", "json"),
+            new("config/app.prod.json", FileCategory.Config, 100, "hash-6", "json"),
+            new("src/worker/Worker.csproj", FileCategory.Source, 120, "hash-7", "xml"),
+            new("requirements.txt", FileCategory.Config, 50, "hash-8", "text")
         };
 
         var findings = new List<Finding>
@@ -577,6 +636,76 @@ public sealed class WebPhase2IntegrationTests : IDisposable
                 Confidence = FindingConfidence.High,
                 Fingerprint = "fp-web-6",
                 Metadata = """{"engine":"artifact-structured","parserMode":"structured","artifactPath":"$.rolloutSpec.secret","matchedValue":"plain-text-secret"}"""
+            },
+            new()
+            {
+                RunId = _runId,
+                RuleId = "config.drift.missing_key",
+                FilePath = "config/app.dev.json",
+                Line = 1,
+                Column = 1,
+                Message = "Config key 'ConnectionStrings.Default' exists in [dev] but is missing in 'prod'.",
+                Snippet = null,
+                Severity = FindingSeverity.Warning,
+                Confidence = FindingConfidence.High,
+                Fingerprint = "fp-web-7",
+                Metadata = """{"engine":"config-drift","key":"ConnectionStrings.Default","configSet":"app.json","environments":["dev","prod"],"presentEnvironments":["dev"],"missingEnvironments":["prod"],"valueDiffers":false}"""
+            },
+            new()
+            {
+                RunId = _runId,
+                RuleId = "config.drift.hardcoded_env_value",
+                FilePath = "config/app.dev.json",
+                Line = 1,
+                Column = 1,
+                Message = "Config key 'FeatureFlags.Rollout' has differing environment values and appears hardcoded.",
+                Snippet = null,
+                Severity = FindingSeverity.Warning,
+                Confidence = FindingConfidence.Medium,
+                Fingerprint = "fp-web-8",
+                Metadata = """{"engine":"config-drift","key":"FeatureFlags.Rollout","configSet":"app.json","environments":["dev","prod"],"presentEnvironments":["dev","prod"],"missingEnvironments":[],"valueDiffers":true,"valuePreviews":[{"environment":"dev","value":"enabled"},{"environment":"prod","value":"disabled"}]}"""
+            },
+            new()
+            {
+                RunId = _runId,
+                RuleId = "deps.vulnerable.high",
+                FilePath = "src/worker/Worker.csproj",
+                Line = 8,
+                Column = 1,
+                Message = "Dependency 'Newtonsoft.Json 12.0.1' has 1 known vulnerabilities.",
+                Snippet = null,
+                Severity = FindingSeverity.Warning,
+                Confidence = FindingConfidence.High,
+                Fingerprint = "fp-web-9",
+                Metadata = """{"engine":"deps","dependency":"Newtonsoft.Json","ecosystem":"NuGet","version":"12.0.1","latestVersion":"13.0.3","vulnerabilities":[{"id":"GHSA-5crp-9r3c-p9vr","severity":"High","summary":"Deserialization issue in specific scenarios."}]}"""
+            },
+            new()
+            {
+                RunId = _runId,
+                RuleId = "deps.unpinned_version",
+                FilePath = "requirements.txt",
+                Line = 1,
+                Column = 1,
+                Message = "Dependency 'requests' is not pinned (version spec '>=2.0').",
+                Snippet = null,
+                Severity = FindingSeverity.Warning,
+                Confidence = FindingConfidence.High,
+                Fingerprint = "fp-web-10",
+                Metadata = """{"engine":"deps","dependency":"requests","ecosystem":"PyPI","versionSpec":">=2.0","latestVersion":"2.32.3"}"""
+            },
+            new()
+            {
+                RunId = _runId,
+                RuleId = "deps.eol.framework",
+                FilePath = "requirements.txt",
+                Line = 2,
+                Column = 1,
+                Message = "EOL framework detected: Python 3.6.",
+                Snippet = null,
+                Severity = FindingSeverity.Error,
+                Confidence = FindingConfidence.High,
+                Fingerprint = "fp-web-11",
+                Metadata = """{"engine":"deps","type":"framework","framework":"Python 3.6","reason":"Out-of-support Python runtime."}"""
             }
         };
 
@@ -588,6 +717,11 @@ public sealed class WebPhase2IntegrationTests : IDisposable
             new("magic-string.candidate", "Magic string candidate", FindingSeverity.Info, "Promote to configuration or typed constant."),
             new("deploy.ev2.hardcoded.subscription", "EV2 Hardcoded Subscription", FindingSeverity.Warning, "Parameterize subscription identifiers in EV2 artifacts instead of hardcoding concrete values."),
             new("deploy.ev2.inline_secret", "EV2 Inline Secret", FindingSeverity.Error, "Replace inline secrets in EV2 artifacts with Key Vault references or secure variable resolution."),
+            new("config.drift.missing_key", "Config Drift Missing Key", FindingSeverity.Warning, "A configuration key exists in one environment file but is missing in another."),
+            new("config.drift.hardcoded_env_value", "Config Drift Hardcoded Value", FindingSeverity.Warning, "Configuration values differ by environment and appear hardcoded."),
+            new("deps.vulnerable.high", "Dependency Vulnerability High", FindingSeverity.Warning, "Dependency has a known high-severity vulnerability."),
+            new("deps.unpinned_version", "Unpinned Dependency Version", FindingSeverity.Warning, "Dependency is not pinned to an exact version."),
+            new("deps.eol.framework", "EOL Framework", FindingSeverity.Error, "Out-of-support framework/runtime detected."),
             new("custom.dormant.rule", "Dormant Custom Rule", FindingSeverity.Info, "No findings expected for this test rule.")
         };
 

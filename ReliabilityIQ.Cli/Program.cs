@@ -19,6 +19,7 @@ public static class Program
         scan.AddCommand(CreateDeployCommand());
         scan.AddCommand(CreateConfigDriftCommand());
         scan.AddCommand(CreateDependenciesCommand());
+        scan.AddCommand(CreateHygieneCommand());
         scan.AddCommand(CreateAllScansCommand());
         root.AddCommand(scan);
 
@@ -318,6 +319,29 @@ public static class Program
                 DatabasePath: db?.FullName);
 
             var exitCode = await DependenciesScanRunner.ExecuteAsync(options, Console.Out, cancellationToken: CancellationToken.None).ConfigureAwait(false);
+            Environment.ExitCode = exitCode;
+        }, repoOption, dbOption);
+
+        return command;
+    }
+
+    private static Command CreateHygieneCommand()
+    {
+        var command = new Command("hygiene", "Run feature-flag, TODO/FIXME debt, and async/thread anti-pattern scans");
+
+        var repoOption = new Option<DirectoryInfo>("--repo", "Repository path to scan")
+        {
+            IsRequired = true
+        };
+        var dbOption = new Option<FileInfo?>("--db", "SQLite database file path (default: <repo-root>/reliabilityiq-results.db)");
+
+        command.AddOption(repoOption);
+        command.AddOption(dbOption);
+
+        command.SetHandler(async (repo, db) =>
+        {
+            var options = new HygieneScanOptions(repo.FullName, db?.FullName);
+            var exitCode = await HygieneScanRunner.ExecuteAsync(options, Console.Out, cancellationToken: CancellationToken.None).ConfigureAwait(false);
             Environment.ExitCode = exitCode;
         }, repoOption, dbOption);
 

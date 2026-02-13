@@ -1,0 +1,276 @@
+@page "/run/{runId}/config-drift"
+@model ReliabilityIQ.Web.Pages.Run.ConfigDriftModel
+@{
+    ViewData["Title"] = "Config Drift";
+}
+
+@if (Model.Run is null)
+{
+    <div class="alert alert-warning" role="alert">Run not found.</div>
+}
+else
+{
+    <section class="mb-3">
+        <h1 class="h3 mb-1">Configuration Drift</h1>
+        <div class="small text-body-secondary">
+            <span class="font-monospace">@Model.Run.RunId</span>
+            <span class="mx-2">|</span>
+            <span class="font-monospace">@Model.Run.RepoRoot</span>
+            <span class="mx-2">|</span>
+            <a asp-page="/Run/Findings" asp-route-runId="@Model.RunId" asp-route-rulePrefix="config.drift." class="link-secondary">Open in Findings</a>
+        </div>
+    </section>
+
+    <div class="row g-3 mb-3">
+        <aside class="col-12 col-lg-3">
+            <div class="card">
+                <div class="card-body">
+                    <h2 class="h6 text-uppercase text-body-secondary">Filters</h2>
+                    <div class="mb-3">
+                        <label for="searchFilter" class="form-label">Search key/config set</label>
+                        <input id="searchFilter" type="text" class="form-control form-control-sm font-monospace" placeholder="ConnectionStrings.Default" />
+                    </div>
+                    <div class="mb-3">
+                        <label for="configSetFilter" class="form-label">Config Set</label>
+                        <select id="configSetFilter" class="form-select form-select-sm">
+                            <option value="">All</option>
+                        </select>
+                    </div>
+                    <div class="form-check mb-3">
+                        <input id="issuesOnlyFilter" class="form-check-input" type="checkbox" checked />
+                        <label for="issuesOnlyFilter" class="form-check-label">Only keys with issues</label>
+                    </div>
+                    <div class="mb-3">
+                        <label for="sortBy" class="form-label">Sort By</label>
+                        <select id="sortBy" class="form-select form-select-sm">
+                            <option value="missing">Missing Keys</option>
+                            <option value="differs">Differs Count</option>
+                            <option value="key">Key</option>
+                            <option value="configSet">Config Set</option>
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label for="sortDir" class="form-label">Direction</label>
+                        <select id="sortDir" class="form-select form-select-sm">
+                            <option value="desc">Descending</option>
+                            <option value="asc">Ascending</option>
+                        </select>
+                    </div>
+                    <button id="applyFilters" type="button" class="btn btn-sm btn-primary w-100">Apply Filters</button>
+                </div>
+            </div>
+        </aside>
+
+        <div class="col-12 col-lg-9">
+            <div class="card mb-3">
+                <div class="card-body py-2 d-flex flex-wrap gap-3 small" id="matrixSummary"></div>
+            </div>
+
+            <div class="table-responsive">
+                <table class="table table-striped table-hover align-middle" id="configMatrixTable">
+                    <thead id="matrixHead"></thead>
+                    <tbody id="matrixBody"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal fade" id="valueDiffModal" tabindex="-1" aria-labelledby="valueDiffLabel" aria-hidden="true">
+        <div class="modal-dialog modal-lg modal-dialog-scrollable">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2 class="modal-title fs-5" id="valueDiffLabel">Configuration Value Diff</h2>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body" id="valueDiffBody"></div>
+            </div>
+        </div>
+    </div>
+}
+
+@section Scripts
+{
+    <script>
+        function escapeHtml(value) {
+            if (!value) return "";
+            return String(value)
+                .replaceAll("&", "&amp;")
+                .replaceAll("<", "&lt;")
+                .replaceAll(">", "&gt;")
+                .replaceAll('"', "&quot;")
+                .replaceAll("'", "&#39;");
+        }
+
+        function cellClass(status) {
+            if (status === "missing") return "table-danger";
+            if (status === "differs") return "table-warning";
+            return "table-success";
+        }
+
+        function statusBadge(status) {
+            if (status === "missing") return '<span class="badge text-bg-danger">missing</span>';
+            if (status === "differs") return '<span class="badge text-bg-warning text-dark">differs</span>';
+            return '<span class="badge text-bg-success">present</span>';
+        }
+
+        function parseRows(data) {
+            if (!data || !Array.isArray(data.data)) {
+                return [];
+            }
+
+            return data.data;
+        }
+
+        async function loadMatrix(runId) {
+            const search = document.getElementById("searchFilter").value;
+            const configSet = document.getElementById("configSetFilter").value;
+            const issuesOnly = document.getElementById("issuesOnlyFilter").checked;
+            const sortBy = document.getElementById("sortBy").value;
+            const sortDesc = document.getElementById("sortDir").value === "desc";
+
+            const url = new URL(`/api/run/${encodeURIComponent(runId)}/config-drift/matrix`, window.location.origin);
+            if (search) url.searchParams.set("search", search);
+            if (configSet) url.searchParams.set("configSet", configSet);
+            url.searchParams.set("issuesOnly", String(issuesOnly));
+            url.searchParams.set("sortBy", sortBy);
+            url.searchParams.set("desc", String(sortDesc));
+
+            const response = await fetch(url, { headers: { "Accept": "application/json" } });
+            if (!response.ok) {
+                renderEmpty(`Unable to load matrix (HTTP ${response.status}).`);
+                return;
+            }
+
+            const payload = await response.json();
+            renderConfigSetFilter(payload.configSets || []);
+            renderSummary(payload);
+            renderMatrix(payload.environments || [], parseRows(payload));
+        }
+
+        function renderConfigSetFilter(configSets) {
+            const select = document.getElementById("configSetFilter");
+            const current = select.value;
+            const options = ['<option value="">All</option>'];
+            for (const setName of configSets) {
+                options.push(`<option value="${escapeHtml(setName)}">${escapeHtml(setName)}</option>`);
+            }
+
+            select.innerHTML = options.join("");
+            if (current && configSets.includes(current)) {
+                select.value = current;
+            }
+        }
+
+        function renderSummary(payload) {
+            const container = document.getElementById("matrixSummary");
+            const rows = Array.isArray(payload.data) ? payload.data : [];
+            const missing = rows.reduce((acc, row) => acc + Number(row.missingCount || 0), 0);
+            const differs = rows.reduce((acc, row) => acc + Number(row.differsCount || 0), 0);
+
+            container.innerHTML = `
+                <div><span class="badge text-bg-secondary">Rows ${rows.length}</span></div>
+                <div><span class="badge text-bg-danger">Missing ${missing}</span></div>
+                <div><span class="badge text-bg-warning text-dark">Differs ${differs}</span></div>
+                <div><span class="badge text-bg-info text-dark">Environments ${(payload.environments || []).length}</span></div>`;
+        }
+
+        function renderEmpty(message) {
+            document.getElementById("matrixHead").innerHTML = "";
+            document.getElementById("matrixBody").innerHTML = `<tr><td class="text-body-secondary">${escapeHtml(message)}</td></tr>`;
+        }
+
+        function renderMatrix(environments, rows) {
+            if (!Array.isArray(environments) || environments.length === 0 || rows.length === 0) {
+                renderEmpty("No configuration drift findings for this run.");
+                return;
+            }
+
+            const head = document.getElementById("matrixHead");
+            const body = document.getElementById("matrixBody");
+
+            head.innerHTML = `<tr>
+                <th>Config Set</th>
+                <th>Key</th>
+                ${environments.map(env => `<th class="text-center">${escapeHtml(env)}</th>`).join("")}
+                <th class="text-center">Missing</th>
+                <th class="text-center">Differs</th>
+            </tr>`;
+
+            body.innerHTML = rows.map((row, rowIndex) => {
+                const cellsByEnv = new Map((row.cells || []).map(cell => [cell.environment, cell]));
+                const environmentCells = environments.map(env => {
+                    const cell = cellsByEnv.get(env) || { environment: env, status: "missing", valuePreview: null, sensitive: false };
+                    const value = cell.valuePreview || "n/a";
+                    const safeValue = cell.sensitive ? "[REDACTED]" : value;
+                    const payload = encodeURIComponent(JSON.stringify({
+                        key: row.key,
+                        configSet: row.configSet,
+                        environment: env,
+                        status: cell.status,
+                        valuePreview: safeValue,
+                        sensitive: !!cell.sensitive,
+                        rowIndex
+                    }));
+                    return `<td class="text-center ${cellClass(cell.status)}"><button type="button" class="btn btn-link btn-sm p-0 matrix-cell" data-cell="${payload}">${statusBadge(cell.status)}</button></td>`;
+                }).join("");
+
+                return `<tr>
+                    <td class="font-monospace small">${escapeHtml(row.configSet)}</td>
+                    <td class="font-monospace small">${escapeHtml(row.key)}</td>
+                    ${environmentCells}
+                    <td class="text-center">${Number(row.missingCount || 0)}</td>
+                    <td class="text-center">${Number(row.differsCount || 0)}</td>
+                </tr>`;
+            }).join("");
+        }
+
+        function showCellDetail(cell) {
+            const modalBody = document.getElementById("valueDiffBody");
+            const preview = cell.sensitive ? "[REDACTED]" : (cell.valuePreview || "n/a");
+
+            modalBody.innerHTML = `
+                <div class="mb-3 small text-body-secondary">Key <span class="font-monospace">${escapeHtml(cell.key)}</span> in <span class="font-monospace">${escapeHtml(cell.configSet)}</span></div>
+                <table class="table table-sm align-middle mb-0">
+                    <thead><tr><th>Environment</th><th>Status</th><th>Value Preview</th></tr></thead>
+                    <tbody>
+                        <tr>
+                            <td class="font-monospace">${escapeHtml(cell.environment)}</td>
+                            <td>${statusBadge(cell.status)}</td>
+                            <td class="font-monospace">${escapeHtml(preview)}</td>
+                        </tr>
+                    </tbody>
+                </table>`;
+
+            const modal = bootstrap.Modal.getOrCreateInstance(document.getElementById("valueDiffModal"));
+            modal.show();
+        }
+
+        (async function () {
+            const runId = "@Model.RunId";
+            await loadMatrix(runId);
+
+            document.getElementById("applyFilters").addEventListener("click", async function () {
+                await loadMatrix(runId);
+            });
+
+            document.getElementById("matrixBody").addEventListener("click", function (event) {
+                const button = event.target.closest(".matrix-cell");
+                if (!button) {
+                    return;
+                }
+
+                const raw = button.getAttribute("data-cell");
+                if (!raw) {
+                    return;
+                }
+
+                try {
+                    const cell = JSON.parse(decodeURIComponent(raw));
+                    showCellDetail(cell);
+                } catch {
+                    // Ignore malformed payload.
+                }
+            });
+        })();
+    </script>
+}

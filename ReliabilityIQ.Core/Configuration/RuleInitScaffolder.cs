@@ -24,6 +24,7 @@ public static class RuleInitScaffolder
         EnsureFile(Path.Combine(rulesRoot, "incidents.yaml"), DefaultIncidentsYaml, created);
         EnsureFile(Path.Combine(rulesRoot, "deploy-ev2.yaml"), DefaultDeployEv2Yaml, created);
         EnsureFile(Path.Combine(rulesRoot, "deploy-ado.yaml"), DefaultDeployAdoYaml, created);
+        EnsureFile(Path.Combine(rulesRoot, "hygiene.yaml"), DefaultHygieneYaml, created);
         EnsureFile(Path.Combine(customRoot, "custom-template.yaml"), DefaultCustomRuleYaml, created);
         EnsureFile(Path.Combine(allowlistsRoot, "default.yaml"), DefaultAllowlistYaml, created);
 
@@ -107,6 +108,16 @@ public static class RuleInitScaffolder
         """
         # ADO deployment rule overrides
         # adoPathMarkers: "pipelines;azure-pipelines"
+        rules: {}
+        """;
+
+    private const string DefaultHygieneYaml =
+        """
+        # Code hygiene scanner tuning
+        # featureFlagStaleDays: 180
+        # featureFlagRecentChangeDays: 90
+        # todoOldDays: 180
+        # todoKeywords: "TODO;FIXME;HACK;XXX;WORKAROUND;TEMP"
         rules: {}
         """;
 

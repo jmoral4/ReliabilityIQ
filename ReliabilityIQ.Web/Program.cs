@@ -1,6 +1,8 @@
 using ReliabilityIQ.Core.Persistence.Queries;
 using ReliabilityIQ.Web.Configuration;
+using ReliabilityIQ.Web.ConfigDrift;
 using ReliabilityIQ.Web.Data;
+using ReliabilityIQ.Web.Dependencies;
 using ReliabilityIQ.Web.Exports;
 using ReliabilityIQ.Web.MagicStrings;
 
@@ -434,6 +436,94 @@ app.MapGet("/api/run/{runId}/magic-strings/filters", async (
         languages,
         modules,
         totalCandidates = projected.Count
+    });
+});
+
+app.MapGet("/api/run/{runId}/config-drift/matrix", async (
+    string runId,
+    HttpRequest request,
+    SqliteResultsQueries queries,
+    CancellationToken cancellationToken) =>
+{
+    var findings = await queries.GetFindingsByRulePrefix(runId, "config.drift.", includeSuppressed: false, cancellationToken).ConfigureAwait(false);
+    var matrix = ConfigDriftProjection.BuildMatrix(findings);
+    var filtered = ConfigDriftProjection.ApplyFiltersAndSort(
+        matrix,
+        search: NullIfEmpty(request.Query["search"].ToString()),
+        configSet: NullIfEmpty(request.Query["configSet"].ToString()),
+        issuesOnly: ParseBool(request.Query["issuesOnly"]),
+        sortBy: NullIfEmpty(request.Query["sortBy"].ToString()),
+        descending: ParseBool(request.Query["desc"]));
+
+    return Results.Ok(new
+    {
+        environments = filtered.Environments,
+        configSets = filtered.ConfigSets,
+        totalRows = matrix.Rows.Count,
+        filteredRows = filtered.Rows.Count,
+        data = filtered.Rows.Select(row => new
+        {
+            configSet = row.ConfigSet,
+            key = row.Key,
+            cells = row.Cells.Select(cell => new
+            {
+                environment = cell.Environment,
+                status = cell.Status,
+                valuePreview = cell.ValuePreview,
+                sensitive = cell.Sensitive
+            }),
+            missingCount = row.MissingCount,
+            differsCount = row.DiffersCount,
+            rules = row.RuleIds
+        })
+    });
+});
+
+app.MapGet("/api/run/{runId}/dependencies", async (
+    string runId,
+    HttpRequest request,
+    SqliteResultsQueries queries,
+    CancellationToken cancellationToken) =>
+{
+    var findings = await queries.GetFindingsByRulePrefix(runId, "deps.", includeSuppressed: false, cancellationToken).ConfigureAwait(false);
+    var projected = DependencyProjection.Build(findings);
+    var filtered = DependencyProjection.ApplyFiltersAndSort(
+        projected,
+        search: NullIfEmpty(request.Query["search"].ToString()),
+        pinned: NullIfEmpty(request.Query["pinned"].ToString()),
+        cveOnly: ParseBool(request.Query["cveOnly"]),
+        eolOnly: ParseBool(request.Query["eolOnly"]),
+        sortBy: NullIfEmpty(request.Query["sortBy"].ToString()),
+        descending: ParseBool(request.Query["desc"]));
+
+    return Results.Ok(new
+    {
+        totalPackages = projected.Packages.Count,
+        filteredPackages = filtered.Packages.Count,
+        packages = filtered.Packages.Select(row => new
+        {
+            name = row.Name,
+            ecosystem = row.Ecosystem,
+            currentVersion = row.CurrentVersion,
+            latestVersion = row.LatestVersion,
+            pinned = row.Pinned,
+            cveCount = row.CveCount,
+            highestSeverity = row.HighestSeverity,
+            highestSeverityRank = row.HighestSeverityRank,
+            stalenessScore = row.StalenessScore,
+            eolStatus = row.EolStatus,
+            vulnerabilities = row.Vulnerabilities.Select(v => new
+            {
+                id = v.Id,
+                severity = v.Severity,
+                summary = v.Summary
+            })
+        }),
+        eolFrameworks = filtered.EolFrameworks.Select(item => new
+        {
+            framework = item.Framework,
+            reason = item.Reason
+        })
     });
 });
 

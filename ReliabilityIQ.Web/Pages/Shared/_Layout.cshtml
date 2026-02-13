@@ -31,6 +31,8 @@
                     <li class="nav-item"><a id="findingsNav" class="nav-link" href="#">Findings</a></li>
                     <li class="nav-item"><a id="deployNav" class="nav-link" href="#">Deploy</a></li>
                     <li class="nav-item"><a id="summaryNav" class="nav-link" href="#">Summary</a></li>
+                    <li class="nav-item"><a id="configDriftNav" class="nav-link" href="#">Config Drift</a></li>
+                    <li class="nav-item"><a id="dependenciesNav" class="nav-link" href="#">Dependencies</a></li>
                     <li class="nav-item"><a id="magicStringsNav" class="nav-link" href="#">Magic Strings</a></li>
                     <li class="nav-item"><a id="heatmapNav" class="nav-link" href="#">Heatmap</a></li>
                     <li class="nav-item"><a id="churnNav" class="nav-link" href="#">Churn</a></li>
@@ -67,6 +69,8 @@
         const findingsNav = document.getElementById("findingsNav");
         const deployNav = document.getElementById("deployNav");
         const summaryNav = document.getElementById("summaryNav");
+        const configDriftNav = document.getElementById("configDriftNav");
+        const dependenciesNav = document.getElementById("dependenciesNav");
         const magicStringsNav = document.getElementById("magicStringsNav");
         const heatmapNav = document.getElementById("heatmapNav");
         const churnNav = document.getElementById("churnNav");
@@ -80,6 +84,8 @@
             findingsNav.classList.toggle("active", /\/run\/[^/]+\/(findings|file\/\d+)$/i.test(path));
             deployNav.classList.toggle("active", /\/run\/[^/]+\/deploy$/i.test(path));
             summaryNav.classList.toggle("active", /\/run\/[^/]+\/summary$/i.test(path));
+            configDriftNav.classList.toggle("active", /\/run\/[^/]+\/config-drift$/i.test(path));
+            dependenciesNav.classList.toggle("active", /\/run\/[^/]+\/dependencies$/i.test(path));
             magicStringsNav.classList.toggle("active", /\/run\/[^/]+\/magic-strings$/i.test(path));
             heatmapNav.classList.toggle("active", /\/run\/[^/]+\/heatmap$/i.test(path));
             churnNav.classList.toggle("active", /\/run\/[^/]+\/churn$/i.test(path));
@@ -97,6 +103,8 @@
                 findingsNav.setAttribute("href", "#");
                 deployNav.setAttribute("href", "#");
                 summaryNav.setAttribute("href", "#");
+                configDriftNav.setAttribute("href", "#");
+                dependenciesNav.setAttribute("href", "#");
                 magicStringsNav.setAttribute("href", "#");
                 heatmapNav.setAttribute("href", "#");
                 churnNav.setAttribute("href", "#");
@@ -108,6 +116,8 @@
             findingsNav.setAttribute("href", `/run/${encoded}/findings`);
             deployNav.setAttribute("href", `/run/${encoded}/deploy`);
             summaryNav.setAttribute("href", `/run/${encoded}/summary`);
+            configDriftNav.setAttribute("href", `/run/${encoded}/config-drift`);
+            dependenciesNav.setAttribute("href", `/run/${encoded}/dependencies`);
             magicStringsNav.setAttribute("href", `/run/${encoded}/magic-strings`);
             heatmapNav.setAttribute("href", `/run/${encoded}/heatmap`);
             churnNav.setAttribute("href", `/run/${encoded}/churn`);
@@ -123,6 +133,16 @@
 
             if (/\/run\/[^/]+\/summary$/i.test(path)) {
                 window.location.href = `/run/${encoded}/summary`;
+                return;
+            }
+
+            if (/\/run\/[^/]+\/config-drift$/i.test(path)) {
+                window.location.href = `/run/${encoded}/config-drift`;
+                return;
+            }
+
+            if (/\/run\/[^/]+\/dependencies$/i.test(path)) {
+                window.location.href = `/run/${encoded}/dependencies`;
                 return;
             }
 

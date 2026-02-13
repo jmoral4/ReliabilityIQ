@@ -2,6 +2,7 @@ using ReliabilityIQ.Core.Artifacts;
 using ReliabilityIQ.Core.ConfigDrift;
 using ReliabilityIQ.Core.Dependencies;
 using ReliabilityIQ.Core.GitHistory;
+using ReliabilityIQ.Core.Hygiene;
 using ReliabilityIQ.Core.MagicStrings;
 using ReliabilityIQ.Core.Persistence;
 using ReliabilityIQ.Core.Portability;
@@ -20,6 +21,7 @@ public static class RuleCatalog
         Add(byId, ArtifactRuleDefinitions.Rules);
         Add(byId, ConfigDriftRuleDefinitions.Rules);
         Add(byId, DependencyRuleDefinitions.Rules);
+        Add(byId, HygieneRuleDefinitions.Rules);
 
         return byId.Values
             .OrderBy(r => r.RuleId, StringComparer.OrdinalIgnoreCase)
@@ -67,6 +69,13 @@ public static class RuleCatalog
         if (ruleId.StartsWith("deps.", StringComparison.OrdinalIgnoreCase))
         {
             return "dependencies";
+        }
+
+        if (ruleId.StartsWith("hygiene.", StringComparison.OrdinalIgnoreCase) ||
+            ruleId.StartsWith("async.", StringComparison.OrdinalIgnoreCase) ||
+            ruleId.StartsWith("thread.", StringComparison.OrdinalIgnoreCase))
+        {
+            return "hygiene";
         }
 
         if (ruleId.StartsWith("custom.", StringComparison.OrdinalIgnoreCase))

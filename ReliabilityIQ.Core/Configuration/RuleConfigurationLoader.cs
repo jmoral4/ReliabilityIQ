@@ -452,6 +452,12 @@ public static class RuleConfigurationLoader
         SetIfPresent(root, "since", "churn.since", scanSettings);
         SetIfPresent(root, "ev2PathMarkers", "deploy.ev2.pathMarkers", scanSettings);
         SetIfPresent(root, "adoPathMarkers", "deploy.ado.pathMarkers", scanSettings);
+        SetIfPresent(root, "featureFlagApiPatterns", "hygiene.featureFlagApiPatterns", scanSettings);
+        SetIfPresent(root, "featureFlagDefinitionPatterns", "hygiene.featureFlagDefinitionPatterns", scanSettings);
+        SetIfPresent(root, "featureFlagStaleDays", "hygiene.featureFlagStaleDays", scanSettings);
+        SetIfPresent(root, "featureFlagRecentChangeDays", "hygiene.featureFlagRecentChangeDays", scanSettings);
+        SetIfPresent(root, "todoKeywords", "hygiene.todoKeywords", scanSettings);
+        SetIfPresent(root, "todoOldDays", "hygiene.todoOldDays", scanSettings);
     }
 
     private static void SetIfPresent(IReadOnlyDictionary<object, object?> root, string yamlKey, string settingKey, IDictionary<string, string> target)
