@@ -90,9 +90,11 @@ app.MapGet("/api/run/{runId}/findings", async (
     var filters = new FindingsQueryFilters(
         Severity: NullIfEmpty(request.Query["severity"].ToString()),
         RuleId: NullIfEmpty(request.Query["rule"].ToString()),
+        Confidence: NullIfEmpty(request.Query["confidence"].ToString()),
         FileCategory: NullIfEmpty(request.Query["fileCategory"].ToString()),
         Language: NullIfEmpty(request.Query["language"].ToString()),
-        PathPrefix: NullIfEmpty(request.Query["pathPrefix"].ToString()));
+        PathPrefix: NullIfEmpty(request.Query["pathPrefix"].ToString()),
+        IncludeSuppressed: ParseBool(request.Query["includeSuppressed"]));
 
     var requestModel = new FindingsQueryRequest(
         Offset: start,
@@ -111,7 +113,10 @@ app.MapGet("/api/run/{runId}/findings", async (
         data = page.Items.Select(item => new
         {
             findingId = item.FindingId,
+            fileId = item.FileId,
             ruleId = item.RuleId,
+            ruleTitle = item.RuleTitle,
+            ruleDescription = item.RuleDescription,
             filePath = item.FilePath,
             line = item.Line,
             column = item.Column,
@@ -120,7 +125,11 @@ app.MapGet("/api/run/{runId}/findings", async (
             severity = item.Severity,
             confidence = item.Confidence,
             fileCategory = item.FileCategory,
-            language = item.Language
+            language = item.Language,
+            metadata = item.Metadata,
+            astConfirmed = item.AstConfirmed,
+            isSuppressed = item.IsSuppressed,
+            suppressionReason = item.SuppressionReason
         })
     });
 });
@@ -147,6 +156,11 @@ static FindingsSortField ParseSortField(string? sortField)
         "confidence" => FindingsSortField.Confidence,
         _ => FindingsSortField.Severity
     };
+}
+
+static bool ParseBool(string? value)
+{
+    return bool.TryParse(value, out var parsed) && parsed;
 }
 
 public partial class Program;

@@ -108,7 +108,139 @@ else
                                 @foreach (var file in Model.TopFiles)
                                 {
                                     <tr>
-                                        <td class="font-monospace small">@file.FilePath</td>
+                                        <td class="font-monospace small">
+                                            <a asp-page="/Run/File" asp-route-runId="@Model.RunId" asp-route-fileId="@file.FileId" class="link-dark">@file.FilePath</a>
+                                        </td>
+                                        <td>@file.FindingCount</td>
+                                    </tr>
+                                }
+                                </tbody>
+                            </table>
+                        </div>
+                    }
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="row g-3 mt-1">
+        <div class="col-12 col-lg-4">
+            <div class="card h-100">
+                <div class="card-body">
+                    <h2 class="h6 text-uppercase text-body-secondary">Findings by Confidence</h2>
+                    @if (Model.ConfidenceSummary.Count == 0)
+                    {
+                        <p class="text-body-secondary mb-0">No findings for this run.</p>
+                    }
+                    else
+                    {
+                        var maxCount = Math.Max(1, Model.ConfidenceSummary.Max(item => item.FindingCount));
+                        <div class="vstack gap-2">
+                            @foreach (var bucket in Model.ConfidenceSummary)
+                            {
+                                var width = (int)Math.Round((double)bucket.FindingCount / maxCount * 100);
+                                <div>
+                                    <div class="d-flex justify-content-between small mb-1">
+                                        <span>@bucket.Confidence</span>
+                                        <span>@bucket.FindingCount</span>
+                                    </div>
+                                    <div class="progress" role="progressbar" aria-label="@bucket.Confidence" aria-valuenow="@width" aria-valuemin="0" aria-valuemax="100">
+                                        <div class="progress-bar bg-success" style="width: @width%"></div>
+                                    </div>
+                                </div>
+                            }
+                        </div>
+                    }
+                </div>
+            </div>
+        </div>
+
+        <div class="col-12 col-lg-4">
+            <div class="card h-100">
+                <div class="card-body">
+                    <h2 class="h6 text-uppercase text-body-secondary">Findings by Language</h2>
+                    @if (Model.LanguageSummary.Count == 0)
+                    {
+                        <p class="text-body-secondary mb-0">No findings for this run.</p>
+                    }
+                    else
+                    {
+                        var maxCount = Math.Max(1, Model.LanguageSummary.Max(item => item.FindingCount));
+                        <div class="vstack gap-2">
+                            @foreach (var language in Model.LanguageSummary)
+                            {
+                                var width = (int)Math.Round((double)language.FindingCount / maxCount * 100);
+                                <div>
+                                    <div class="d-flex justify-content-between small mb-1">
+                                        <span class="font-monospace">@language.Language</span>
+                                        <span>@language.FindingCount</span>
+                                    </div>
+                                    <div class="progress" role="progressbar" aria-label="@language.Language" aria-valuenow="@width" aria-valuemin="0" aria-valuemax="100">
+                                        <div class="progress-bar bg-primary" style="width: @width%"></div>
+                                    </div>
+                                </div>
+                            }
+                        </div>
+                    }
+                </div>
+            </div>
+        </div>
+
+        <div class="col-12 col-lg-4">
+            <div class="card h-100">
+                <div class="card-body">
+                    <h2 class="h6 text-uppercase text-body-secondary">AST vs Regex</h2>
+                    @if (Model.AstSummary.TotalCount == 0)
+                    {
+                        <p class="text-body-secondary mb-0">No findings for this run.</p>
+                    }
+                    else
+                    {
+                        var astPercent = (int)Math.Round((double)Model.AstSummary.AstConfirmedCount / Model.AstSummary.TotalCount * 100);
+                        var regexPercent = 100 - astPercent;
+                        <div class="small mb-2">
+                            <span class="badge text-bg-success-subtle text-success-emphasis me-1">AST @Model.AstSummary.AstConfirmedCount</span>
+                            <span class="badge text-bg-secondary">Regex @Model.AstSummary.RegexOnlyCount</span>
+                        </div>
+                        <div class="progress stacked-progress mb-2" role="progressbar" aria-label="AST to regex ratio" aria-valuemin="0" aria-valuemax="100">
+                            <div class="progress-bar bg-success" style="width: @astPercent%"></div>
+                            <div class="progress-bar bg-secondary" style="width: @regexPercent%"></div>
+                        </div>
+                        <div class="small text-body-secondary">
+                            AST-confirmed: @astPercent% | Regex-only: @regexPercent%
+                        </div>
+                    }
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="row g-3 mt-1">
+        <div class="col-12">
+            <div class="card">
+                <div class="card-body">
+                    <h2 class="h6 text-uppercase text-body-secondary">Top 10 Files by High-Confidence Findings</h2>
+                    @if (Model.TopHighConfidenceFiles.Count == 0)
+                    {
+                        <p class="text-body-secondary mb-0">No high-confidence findings for this run.</p>
+                    }
+                    else
+                    {
+                        <div class="table-responsive">
+                            <table class="table table-sm align-middle mb-0">
+                                <thead>
+                                <tr>
+                                    <th>File</th>
+                                    <th>High-Confidence Findings</th>
+                                </tr>
+                                </thead>
+                                <tbody>
+                                @foreach (var file in Model.TopHighConfidenceFiles)
+                                {
+                                    <tr>
+                                        <td class="font-monospace small">
+                                            <a asp-page="/Run/File" asp-route-runId="@Model.RunId" asp-route-fileId="@file.FileId" class="link-dark">@file.FilePath</a>
+                                        </td>
                                         <td>@file.FindingCount</td>
                                     </tr>
                                 }

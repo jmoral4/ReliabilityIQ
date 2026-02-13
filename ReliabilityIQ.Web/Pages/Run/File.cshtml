@@ -1,0 +1,165 @@
+@page "/run/{runId}/file/{fileId:long}"
+@model ReliabilityIQ.Web.Pages.Run.FileModel
+@{
+    ViewData["Title"] = "File Detail";
+}
+
+@if (Model.Run is null || Model.FileDetails is null)
+{
+    <div class="alert alert-warning" role="alert">File or run not found.</div>
+}
+else
+{
+    <section class="mb-3">
+        <div class="d-flex justify-content-between align-items-start flex-wrap gap-2">
+            <div>
+                <h1 class="h3 mb-1">File Detail</h1>
+                <div class="small text-body-secondary">
+                    <span class="font-monospace">@Model.FileDetails.FilePath</span>
+                </div>
+            </div>
+            <a class="btn btn-sm btn-outline-secondary" asp-page="/Run/Findings" asp-route-runId="@Model.RunId">Back to Findings</a>
+        </div>
+    </section>
+
+    <div class="row g-3 mb-4">
+        <div class="col-12 col-md-6 col-lg-4">
+            <div class="card h-100">
+                <div class="card-body">
+                    <h2 class="h6 text-uppercase text-body-secondary">Metadata</h2>
+                    <dl class="row mb-0 small">
+                        <dt class="col-5">Category</dt>
+                        <dd class="col-7">@Model.FileDetails.Category</dd>
+                        <dt class="col-5">Language</dt>
+                        <dd class="col-7">@(Model.FileDetails.Language ?? "unknown")</dd>
+                        <dt class="col-5">Size</dt>
+                        <dd class="col-7">@Model.FileDetails.SizeBytes bytes</dd>
+                        <dt class="col-5">Hash</dt>
+                        <dd class="col-7 font-monospace">@Model.FileDetails.Hash</dd>
+                    </dl>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-12 col-md-6 col-lg-8">
+            <div class="card h-100">
+                <div class="card-body">
+                    <h2 class="h6 text-uppercase text-body-secondary">Findings in File (@Model.Findings.Count)</h2>
+                    @if (Model.Findings.Count == 0)
+                    {
+                        <p class="text-body-secondary mb-0">No findings for this file.</p>
+                    }
+                    else
+                    {
+                        <div class="table-responsive">
+                            <table class="table table-sm align-middle mb-0">
+                                <thead>
+                                <tr>
+                                    <th>Line</th>
+                                    <th>Severity</th>
+                                    <th>Rule</th>
+                                    <th>Confidence</th>
+                                </tr>
+                                </thead>
+                                <tbody>
+                                @foreach (var finding in Model.Findings)
+                                {
+                                    var severityClass = finding.Severity switch
+                                    {
+                                        "Error" => "text-bg-danger",
+                                        "Warning" => "text-bg-warning text-dark",
+                                        _ => "text-bg-info text-dark"
+                                    };
+
+                                    var confidenceClass = finding.Confidence switch
+                                    {
+                                        "High" => "text-bg-success",
+                                        "Medium" => "text-bg-primary",
+                                        _ => "text-bg-secondary"
+                                    };
+
+                                    <tr class="@(finding.IsSuppressed ? "suppressed-row" : string.Empty)">
+                                        <td class="font-monospace">@finding.Line</td>
+                                        <td><span class="badge @severityClass">@finding.Severity</span></td>
+                                        <td class="font-monospace small">@finding.RuleId</td>
+                                        <td><span class="badge @confidenceClass">@finding.Confidence</span></td>
+                                    </tr>
+                                }
+                                </tbody>
+                            </table>
+                        </div>
+                    }
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <section>
+        <h2 class="h5 mb-3">Snippet Timeline</h2>
+        @if (Model.Findings.Count == 0)
+        {
+            <p class="text-body-secondary mb-0">No snippets available.</p>
+        }
+        else
+        {
+            <div class="finding-timeline">
+                @foreach (var finding in Model.Findings)
+                {
+                    var markerClass = finding.Severity switch
+                    {
+                        "Error" => "marker-error",
+                        "Warning" => "marker-warning",
+                        _ => "marker-info"
+                    };
+                    var languageClass = (Model.FileDetails.Language ?? "plaintext").ToLowerInvariant();
+
+                    <article class="timeline-item @(finding.IsSuppressed ? "suppressed-row" : string.Empty)">
+                        <div class="timeline-gutter">
+                            <span class="timeline-marker @markerClass" title="@finding.Severity"></span>
+                            <span class="font-monospace small">L@finding.Line</span>
+                        </div>
+                        <div class="timeline-body">
+                            <div class="small mb-1">
+                                <span class="badge text-bg-light border">@finding.RuleId</span>
+                                @if (finding.AstConfirmed)
+                                {
+                                    <span class="badge text-bg-success-subtle text-success-emphasis">AST</span>
+                                }
+                                else
+                                {
+                                    <span class="badge text-bg-secondary">Regex</span>
+                                }
+                                @if (finding.IsSuppressed)
+                                {
+                                    <span class="badge text-bg-secondary">Suppressed</span>
+                                }
+                            </div>
+                            <div class="mb-2">@finding.Message</div>
+                            @if (!string.IsNullOrWhiteSpace(finding.SuppressionReason))
+                            {
+                                <div class="small text-body-secondary mb-2">Suppression reason: @finding.SuppressionReason</div>
+                            }
+                            @if (!string.IsNullOrWhiteSpace(finding.Snippet))
+                            {
+                                <pre><code class="language-@languageClass">@finding.Snippet</code></pre>
+                            }
+                            else
+                            {
+                                <p class="small text-body-secondary">No snippet captured.</p>
+                            }
+                        </div>
+                    </article>
+                }
+            </div>
+        }
+    </section>
+}
+
+@section Scripts
+{
+    <script>
+        document.querySelectorAll("pre code").forEach(function (el) {
+            hljs.highlightElement(el);
+        });
+    </script>
+}

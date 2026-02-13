@@ -71,8 +71,25 @@ else
                     </div>
 
                     <div class="mb-3">
+                        <label for="confidenceFilter" class="form-label">Confidence</label>
+                        <select id="confidenceFilter" class="form-select form-select-sm">
+                            <option value="">All</option>
+                            <option value="High">High</option>
+                            <option value="Medium">Medium</option>
+                            <option value="Low">Low</option>
+                        </select>
+                    </div>
+
+                    <div class="mb-3">
                         <label for="pathPrefixFilter" class="form-label">Path Prefix</label>
                         <input id="pathPrefixFilter" class="form-control form-control-sm font-monospace" type="text" placeholder="src/" />
+                    </div>
+
+                    <div class="form-check mb-3">
+                        <input class="form-check-input" type="checkbox" id="showSuppressedToggle" />
+                        <label class="form-check-label" for="showSuppressedToggle">
+                            Show suppressed findings
+                        </label>
                     </div>
 
                     <button id="applyFilters" type="button" class="btn btn-sm btn-primary w-100">Apply Filters</button>
@@ -86,10 +103,13 @@ else
                     <thead>
                     <tr>
                         <th></th>
+                        <th>Signal</th>
                         <th>Severity</th>
                         <th>Rule ID</th>
                         <th>File Path</th>
                         <th>Line</th>
+                        <th>Language</th>
+                        <th>Category</th>
                         <th>Message</th>
                         <th>Confidence</th>
                     </tr>
@@ -103,10 +123,44 @@ else
 @section Scripts
 {
     <script>
+        function escapeHtml(value) {
+            if (!value) return "";
+            return String(value)
+                .replaceAll("&", "&amp;")
+                .replaceAll("<", "&lt;")
+                .replaceAll(">", "&gt;")
+                .replaceAll('"', "&quot;")
+                .replaceAll("'", "&#39;");
+        }
+
         function severityBadge(severity) {
             if (severity === "Error") return '<span class="badge text-bg-danger">Error</span>';
             if (severity === "Warning") return '<span class="badge text-bg-warning text-dark">Warning</span>';
             return '<span class="badge text-bg-info text-dark">Info</span>';
+        }
+
+        function confidenceBadge(confidence) {
+            if (confidence === "High") return '<span class="badge text-bg-success">High</span>';
+            if (confidence === "Medium") return '<span class="badge text-bg-primary">Medium</span>';
+            return '<span class="badge text-bg-secondary">Low</span>';
+        }
+
+        function signalBadge(row) {
+            return row.astConfirmed
+                ? '<span class="badge text-bg-success-subtle text-success-emphasis">AST</span>'
+                : '<span class="badge text-bg-secondary">Regex</span>';
+        }
+
+        function parseMetadata(metadata) {
+            if (!metadata) {
+                return {};
+            }
+
+            try {
+                return JSON.parse(metadata);
+            } catch {
+                return {};
+            }
         }
 
         const runId = "@Model.RunId";
@@ -114,15 +168,22 @@ else
             serverSide: true,
             processing: true,
             pageLength: 25,
-            order: [[1, "asc"]],
+            order: [[2, "asc"]],
             ajax: {
                 url: `/api/run/${encodeURIComponent(runId)}/findings`,
                 data: function (d) {
                     d.severity = document.getElementById("severityFilter").value;
                     d.rule = document.getElementById("ruleFilter").value;
+                    d.confidence = document.getElementById("confidenceFilter").value;
                     d.fileCategory = document.getElementById("categoryFilter").value;
                     d.language = document.getElementById("languageFilter").value;
                     d.pathPrefix = document.getElementById("pathPrefixFilter").value;
+                    d.includeSuppressed = document.getElementById("showSuppressedToggle").checked;
+                }
+            },
+            createdRow: function (row, data) {
+                if (data.isSuppressed) {
+                    row.classList.add("suppressed-row");
                 }
             },
             columns: [
@@ -134,15 +195,32 @@ else
                     defaultContent: '<button class="btn btn-sm btn-outline-secondary" type="button">+</button>'
                 },
                 {
+                    data: null,
+                    name: "signal",
+                    orderable: false,
+                    render: function (_, __, row) { return signalBadge(row); }
+                },
+                {
                     data: "severity",
                     name: "severity",
                     render: function (data) { return severityBadge(data); }
                 },
                 { data: "ruleId", name: "ruleId", className: "font-monospace small" },
-                { data: "filePath", name: "filePath", className: "font-monospace small" },
+                {
+                    data: null,
+                    name: "filePath",
+                    className: "font-monospace small",
+                    render: function (_, __, row) {
+                        const encodedRun = encodeURIComponent(runId);
+                        const encodedFileId = encodeURIComponent(row.fileId);
+                        return `<a href="/run/${encodedRun}/file/${encodedFileId}" class="link-dark">${escapeHtml(row.filePath)}</a>`;
+                    }
+                },
                 { data: "line", name: "line" },
-                { data: "message", name: "message" },
-                { data: "confidence", name: "confidence" }
+                { data: "language", name: "language", defaultContent: "-", orderable: false },
+                { data: "fileCategory", name: "fileCategory", defaultContent: "-", orderable: false },
+                { data: "message", name: "message", orderable: false, render: function (data) { return escapeHtml(data); } },
+                { data: "confidence", name: "confidence", render: function (data) { return confidenceBadge(data); } }
             ]
         });
 
@@ -165,17 +243,37 @@ else
             }
 
             const data = row.data();
-            const snippet = data.snippet ? `<pre class="mb-2 small">${data.snippet}</pre>` : "<p class=\"mb-2 small text-body-secondary\">No snippet captured.</p>";
+            const metadata = parseMetadata(data.metadata);
+            const callsite = metadata.callsite || metadata.context || "n/a";
+            const engine = metadata.engine || (data.astConfirmed ? "ast" : "regex");
+            const snippet = data.snippet
+                ? `<pre><code class="language-${escapeHtml((data.language || "plaintext").toLowerCase())}">${escapeHtml(data.snippet)}</code></pre>`
+                : "<p class=\"mb-2 small text-body-secondary\">No snippet captured.</p>";
+            const suppression = data.isSuppressed
+                ? `<div class="alert alert-secondary py-2 px-3 small mb-2">Suppressed${data.suppressionReason ? `: ${escapeHtml(data.suppressionReason)}` : ""}</div>`
+                : "";
+            const remediation = data.ruleDescription
+                ? `<div class="mt-2"><button class="btn btn-sm btn-outline-primary" type="button" data-bs-toggle="collapse" data-bs-target="#remediation-${data.findingId}" aria-expanded="false">Remediation</button><div class="collapse mt-2" id="remediation-${data.findingId}"><div class="card card-body small">${escapeHtml(data.ruleDescription)}</div></div></div>`
+                : "";
             const details = `
                 <div class="p-2">
+                    ${suppression}
+                    <div class="row g-2 mb-2 small">
+                        <div class="col-md-4"><span class="text-body-secondary">Engine:</span> ${escapeHtml(engine)}</div>
+                        <div class="col-md-8"><span class="text-body-secondary">Callsite Context:</span> <span class="font-monospace">${escapeHtml(callsite)}</span></div>
+                    </div>
                     <div class="small text-body-secondary mb-1">Full Message</div>
-                    <div class="mb-2">${data.message}</div>
+                    <div class="mb-2">${escapeHtml(data.message)}</div>
                     <div class="small text-body-secondary mb-1">Snippet</div>
                     ${snippet}
+                    ${remediation}
                 </div>`;
 
             row.child(details).show();
             button.textContent = "-";
+            document.querySelectorAll("pre code").forEach(function (el) {
+                hljs.highlightElement(el);
+            });
         });
     </script>
 }

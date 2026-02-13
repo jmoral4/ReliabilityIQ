@@ -1,7 +1,9 @@
 using System.Net;
 using System.Text.Json;
+using Dapper;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Configuration;
 using ReliabilityIQ.Core;
 using ReliabilityIQ.Core.Persistence;
@@ -13,6 +15,7 @@ public sealed class WebPhase2IntegrationTests : IDisposable
     private readonly string _tempDir;
     private readonly string _dbPath;
     private readonly string _runId;
+    private long _fileId;
 
     public WebPhase2IntegrationTests()
     {
@@ -33,10 +36,12 @@ public sealed class WebPhase2IntegrationTests : IDisposable
         var home = await client.GetAsync("/");
         var findings = await client.GetAsync($"/run/{Uri.EscapeDataString(_runId)}/findings");
         var summary = await client.GetAsync($"/run/{Uri.EscapeDataString(_runId)}/summary");
+        var fileDetail = await client.GetAsync($"/run/{Uri.EscapeDataString(_runId)}/file/{_fileId}");
 
         Assert.Equal(HttpStatusCode.OK, home.StatusCode);
         Assert.Equal(HttpStatusCode.OK, findings.StatusCode);
         Assert.Equal(HttpStatusCode.OK, summary.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, fileDetail.StatusCode);
     }
 
     [Fact]
@@ -47,7 +52,7 @@ public sealed class WebPhase2IntegrationTests : IDisposable
         using var factory = new TestWebApplicationFactory(_dbPath);
         using var client = factory.CreateClient();
 
-        var uri = $"/api/run/{Uri.EscapeDataString(_runId)}/findings?draw=7&start=0&length=10&order[0][column]=1&order[0][dir]=asc&columns[1][name]=severity&severity=Warning&rule=portability.hardcoded.dns";
+        var uri = $"/api/run/{Uri.EscapeDataString(_runId)}/findings?draw=7&start=0&length=10&order[0][column]=2&order[0][dir]=asc&columns[2][name]=severity&severity=Warning&rule=portability.hardcoded.dns&confidence=High&includeSuppressed=true";
         var response = await client.GetAsync(uri);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
@@ -67,7 +72,10 @@ public sealed class WebPhase2IntegrationTests : IDisposable
 
         var first = data.EnumerateArray().First();
         Assert.True(first.TryGetProperty("findingId", out _));
+        Assert.True(first.TryGetProperty("fileId", out _));
         Assert.True(first.TryGetProperty("ruleId", out _));
+        Assert.True(first.TryGetProperty("ruleTitle", out _));
+        Assert.True(first.TryGetProperty("ruleDescription", out _));
         Assert.True(first.TryGetProperty("filePath", out _));
         Assert.True(first.TryGetProperty("line", out _));
         Assert.True(first.TryGetProperty("column", out _));
@@ -77,6 +85,37 @@ public sealed class WebPhase2IntegrationTests : IDisposable
         Assert.True(first.TryGetProperty("confidence", out _));
         Assert.True(first.TryGetProperty("fileCategory", out _));
         Assert.True(first.TryGetProperty("language", out _));
+        Assert.True(first.TryGetProperty("metadata", out _));
+        Assert.True(first.TryGetProperty("astConfirmed", out _));
+        Assert.True(first.TryGetProperty("isSuppressed", out _));
+        Assert.True(first.TryGetProperty("suppressionReason", out _));
+    }
+
+    [Fact]
+    public async Task FindingsApi_HidesSuppressedByDefault_AndShowsWhenRequested()
+    {
+        await SeedDatabaseAsync();
+
+        using var factory = new TestWebApplicationFactory(_dbPath);
+        using var client = factory.CreateClient();
+
+        var hiddenUri = $"/api/run/{Uri.EscapeDataString(_runId)}/findings?draw=1&start=0&length=50&order[0][column]=2&order[0][dir]=asc&columns[2][name]=severity&rule=portability.hardcoded.endpoint";
+        var shownUri = $"{hiddenUri}&includeSuppressed=true";
+
+        var hiddenResponse = await client.GetAsync(hiddenUri);
+        var shownResponse = await client.GetAsync(shownUri);
+
+        Assert.Equal(HttpStatusCode.OK, hiddenResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, shownResponse.StatusCode);
+
+        using var hiddenJson = JsonDocument.Parse(await hiddenResponse.Content.ReadAsStringAsync());
+        using var shownJson = JsonDocument.Parse(await shownResponse.Content.ReadAsStringAsync());
+
+        var hiddenCount = hiddenJson.RootElement.GetProperty("recordsFiltered").GetInt32();
+        var shownCount = shownJson.RootElement.GetProperty("recordsFiltered").GetInt32();
+
+        Assert.Equal(0, hiddenCount);
+        Assert.Equal(1, shownCount);
     }
 
     private async Task SeedDatabaseAsync()
@@ -110,16 +149,40 @@ public sealed class WebPhase2IntegrationTests : IDisposable
                 Severity = FindingSeverity.Warning,
                 Confidence = FindingConfidence.High,
                 Fingerprint = "fp-web-1",
-                Metadata = "{}"
+                Metadata = """{"engine":"roslyn","astConfirmed":true,"callsite":"HttpClient.GetAsync","context":"InvocationExpression"}"""
+            },
+            new()
+            {
+                RunId = _runId,
+                RuleId = "portability.hardcoded.endpoint",
+                FilePath = "src/program.cs",
+                Line = 25,
+                Column = 13,
+                Message = "Hardcoded cloud management endpoint detected.",
+                Snippet = "management.azure.com",
+                Severity = FindingSeverity.Warning,
+                Confidence = FindingConfidence.Medium,
+                Fingerprint = "fp-web-2",
+                Metadata = """{"engine":"regex","suppressed":true,"suppressionReason":"fixture"}"""
             }
         };
 
         var rules = new List<RuleDefinition>
         {
-            new("portability.hardcoded.dns", "Hardcoded DNS", FindingSeverity.Warning, "Use configuration for DNS names.")
+            new("portability.hardcoded.dns", "Hardcoded DNS", FindingSeverity.Warning, "Use configuration for DNS names."),
+            new("portability.hardcoded.endpoint", "Hardcoded Endpoint", FindingSeverity.Warning, "Replace hardcoded endpoint with IConfiguration lookup.")
         };
 
         await writer.WriteAsync(run, files, findings, rules);
+
+        await using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = _dbPath
+        }.ToString());
+        await connection.OpenAsync();
+        _fileId = await connection.ExecuteScalarAsync<long>(
+            "SELECT file_id FROM files WHERE run_id = @RunId LIMIT 1;",
+            new { RunId = _runId });
     }
 
     public void Dispose()

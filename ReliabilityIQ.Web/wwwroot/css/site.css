@@ -29,3 +29,64 @@ pre {
     white-space: pre-wrap;
     word-break: break-word;
 }
+
+.suppressed-row {
+    opacity: 0.55;
+}
+
+.finding-timeline {
+    display: grid;
+    gap: 0.75rem;
+}
+
+.timeline-item {
+    display: grid;
+    grid-template-columns: 5.5rem 1fr;
+    gap: 0.75rem;
+    padding: 0.75rem;
+    border: 1px solid #dbe2ef;
+    border-radius: 0.5rem;
+    background: #fff;
+}
+
+.timeline-gutter {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.4rem;
+    padding-top: 0.1rem;
+}
+
+.timeline-marker {
+    width: 0.65rem;
+    height: 0.65rem;
+    border-radius: 50%;
+    border: 1px solid rgba(0, 0, 0, 0.15);
+}
+
+.marker-error {
+    background-color: #dc3545;
+}
+
+.marker-warning {
+    background-color: #ffc107;
+}
+
+.marker-info {
+    background-color: #0dcaf0;
+}
+
+.stacked-progress {
+    height: 1rem;
+}
+
+@media (max-width: 767px) {
+    .timeline-item {
+        grid-template-columns: 1fr;
+    }
+
+    .timeline-gutter {
+        flex-direction: row;
+        justify-content: flex-start;
+    }
+}

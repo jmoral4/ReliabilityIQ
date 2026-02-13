@@ -12,6 +12,9 @@
     <link
         href="https://cdn.datatables.net/2.1.8/css/dataTables.bootstrap5.min.css"
         rel="stylesheet" />
+    <link
+        href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/styles/github.min.css"
+        rel="stylesheet" />
     <link rel="stylesheet" href="~/css/site.css" asp-append-version="true" />
 </head>
 <body>
@@ -51,6 +54,7 @@
     crossorigin="anonymous"></script>
 <script src="https://cdn.datatables.net/2.1.8/js/dataTables.min.js"></script>
 <script src="https://cdn.datatables.net/2.1.8/js/dataTables.bootstrap5.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.1/highlight.min.js"></script>
 <script>
     (async function () {
         const runSelector = document.getElementById("runSelector");
@@ -61,7 +65,7 @@
 
         function setActiveNav() {
             runsNav.classList.toggle("active", path === "/");
-            findingsNav.classList.toggle("active", /\/run\/[^/]+\/findings$/i.test(path));
+            findingsNav.classList.toggle("active", /\/run\/[^/]+\/(findings|file\/\d+)$/i.test(path));
             summaryNav.classList.toggle("active", /\/run\/[^/]+\/summary$/i.test(path));
         }
 
@@ -91,6 +95,11 @@
 
             if (/\/run\/[^/]+\/summary$/i.test(path)) {
                 window.location.href = `/run/${encoded}/summary`;
+                return;
+            }
+
+            if (/\/run\/[^/]+\/file\/\d+$/i.test(path)) {
+                window.location.href = `/run/${encoded}/findings`;
                 return;
             }
 

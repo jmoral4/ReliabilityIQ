@@ -12,6 +12,8 @@ public static class Program
 
         var scan = new Command("scan", "Run scans");
         scan.AddCommand(CreatePortabilityCommand());
+        scan.AddCommand(CreateMagicStringsCommand());
+        scan.AddCommand(CreateAllScansCommand());
         root.AddCommand(scan);
 
         var server = new Command("server", "Run the ReliabilityIQ web server");
@@ -80,6 +82,96 @@ public static class Program
     {
         severity = value;
         return true;
+    }
+
+    private static Command CreateMagicStringsCommand()
+    {
+        var command = new Command("magic-strings", "Run magic strings scan and persist ranked candidates to SQLite");
+
+        var repoOption = new Option<DirectoryInfo>("--repo", "Repository path to scan")
+        {
+            IsRequired = true
+        };
+
+        var dbOption = new Option<FileInfo?>("--db", "SQLite database file path (default: <repo-root>/reliabilityiq-results.db)");
+        var minOccurrencesOption = new Option<int>("--min-occurrences", () => 2, "Minimum occurrence count required for a candidate.");
+        var topOption = new Option<int>("--top", () => 500, "Maximum number of ranked candidates to persist.");
+        var configOption = new Option<FileInfo?>("--config", "Optional magic strings YAML config path (default: <repo-root>/reliabilityiq.magicstrings.yaml)");
+
+        command.AddOption(repoOption);
+        command.AddOption(dbOption);
+        command.AddOption(minOccurrencesOption);
+        command.AddOption(topOption);
+        command.AddOption(configOption);
+
+        command.SetHandler(async (repo, db, minOccurrences, top, config) =>
+        {
+            var options = new MagicStringsScanOptions(
+                RepoPath: repo.FullName,
+                DatabasePath: db?.FullName,
+                MinOccurrences: minOccurrences,
+                Top: top,
+                ConfigPath: config?.FullName);
+
+            var exitCode = await MagicStringsScanRunner.ExecuteAsync(options, Console.Out, CancellationToken.None).ConfigureAwait(false);
+            Environment.ExitCode = exitCode;
+        }, repoOption, dbOption, minOccurrencesOption, topOption, configOption);
+
+        return command;
+    }
+
+    private static Command CreateAllScansCommand()
+    {
+        var command = new Command("all", "Run portability and magic strings scans");
+
+        var repoOption = new Option<DirectoryInfo>("--repo", "Repository path to scan")
+        {
+            IsRequired = true
+        };
+        var dbOption = new Option<FileInfo?>("--db", "SQLite database file path (default: <repo-root>/reliabilityiq-results.db)");
+        var failOnOption = new Option<string>("--fail-on", () => "error", "Exit with code 1 when portability findings at or above this severity are present. Values: error|warning|info.");
+        var suppressionsOption = new Option<FileInfo?>("--suppressions", "Optional suppression file path (default: <repo-root>/reliabilityiq.suppressions.yaml)");
+        var minOccurrencesOption = new Option<int>("--min-occurrences", () => 2, "Minimum occurrence count required for magic string candidates.");
+        var topOption = new Option<int>("--top", () => 500, "Maximum number of ranked magic string candidates to persist.");
+        var configOption = new Option<FileInfo?>("--config", "Optional magic strings YAML config path (default: <repo-root>/reliabilityiq.magicstrings.yaml)");
+
+        command.AddOption(repoOption);
+        command.AddOption(dbOption);
+        command.AddOption(failOnOption);
+        command.AddOption(suppressionsOption);
+        command.AddOption(minOccurrencesOption);
+        command.AddOption(topOption);
+        command.AddOption(configOption);
+
+        command.SetHandler(async (repo, db, failOn, suppressions, minOccurrences, top, config) =>
+        {
+            if (!TryParseFailOn(failOn, out var failOnSeverity))
+            {
+                Console.Error.WriteLine("Invalid value for --fail-on. Allowed values: error, warning, info.");
+                Environment.ExitCode = 2;
+                return;
+            }
+
+            var portabilityExitCode = await PortabilityScanRunner.ExecuteAsync(
+                new PortabilityScanOptions(repo.FullName, db?.FullName, failOnSeverity, suppressions?.FullName),
+                Console.Out,
+                CancellationToken.None).ConfigureAwait(false);
+
+            if (portabilityExitCode == 2)
+            {
+                Environment.ExitCode = 2;
+                return;
+            }
+
+            var magicExitCode = await MagicStringsScanRunner.ExecuteAsync(
+                new MagicStringsScanOptions(repo.FullName, db?.FullName, minOccurrences, top, config?.FullName),
+                Console.Out,
+                CancellationToken.None).ConfigureAwait(false);
+
+            Environment.ExitCode = magicExitCode == 2 ? 2 : portabilityExitCode;
+        }, repoOption, dbOption, failOnOption, suppressionsOption, minOccurrencesOption, topOption, configOption);
+
+        return command;
     }
 
     private static Command CreateServerStartCommand()

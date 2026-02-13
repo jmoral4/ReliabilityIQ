@@ -22,6 +22,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\ReliabilityIQ.Analyzers.MagicStrings\ReliabilityIQ.Analyzers.MagicStrings.csproj" />
     <ProjectReference Include="..\ReliabilityIQ.Analyzers.CSharp\ReliabilityIQ.Analyzers.CSharp.csproj" />
     <ProjectReference Include="..\ReliabilityIQ.Analyzers.PowerShell\ReliabilityIQ.Analyzers.PowerShell.csproj" />
     <ProjectReference Include="..\ReliabilityIQ.Analyzers.Regex\ReliabilityIQ.Analyzers.Regex.csproj" />
