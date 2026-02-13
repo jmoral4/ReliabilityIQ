@@ -37,7 +37,17 @@ public sealed class PowerShellPortabilityAnalyzer : IAnalyzer
             return Task.FromResult<IEnumerable<Finding>>([]);
         }
 
-        var ast = Parser.ParseInput(context.Content, out _, out _);
+        ScriptBlockAst ast;
+        try
+        {
+            ast = Parser.ParseInput(context.Content, out _, out _);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"PowerShell parse failed for '{context.FilePath}': {ex.Message}");
+            return Task.FromResult<IEnumerable<Finding>>([]);
+        }
+
         var findings = new List<Finding>();
         var lines = context.Content.Split('\n');
         var inlineSuppressions = ParseInlineSuppressions(lines);

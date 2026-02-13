@@ -194,7 +194,17 @@ public sealed class MagicStringAnalyzer
 
     private IEnumerable<MagicStringOccurrence> ExtractPowerShellOccurrences(MagicStringFileInput file, MagicStringsAnalysisOptions options)
     {
-        var ast = Parser.ParseInput(file.Content, out _, out _);
+        ScriptBlockAst ast;
+        try
+        {
+            ast = Parser.ParseInput(file.Content, out _, out _);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"PowerShell parse failed for '{file.FilePath}' during magic string extraction: {ex.Message}");
+            return [];
+        }
+
         var occurrences = new List<MagicStringOccurrence>();
         var candidates = ast.FindAll(node => node is StringConstantExpressionAst or ExpandableStringExpressionAst, searchNestedScriptBlocks: true);
 

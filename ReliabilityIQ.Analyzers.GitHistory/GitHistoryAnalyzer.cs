@@ -1,6 +1,9 @@
 using System.Collections.Concurrent;
+using System.Security.Cryptography;
+using System.Text;
 using LibGit2Sharp;
 using ReliabilityIQ.Core;
+using ReliabilityIQ.Core.GitHistory;
 
 namespace ReliabilityIQ.Analyzers.GitHistory;
 
@@ -24,7 +27,173 @@ public sealed class GitHistoryAnalyzer : IAnalyzer
 
     public Task<IEnumerable<Finding>> AnalyzeAsync(AnalysisContext context, CancellationToken cancellationToken = default)
     {
-        return Task.FromResult(Enumerable.Empty<Finding>());
+        if (!SupportedFileCategories.Contains(context.FileCategory))
+        {
+            return Task.FromResult<IEnumerable<Finding>>([]);
+        }
+
+        var repoRoot = ResolveRepositoryRoot(context);
+        if (string.IsNullOrWhiteSpace(repoRoot))
+        {
+            return Task.FromResult<IEnumerable<Finding>>(
+            [
+                CreateAnalyzerUnavailableFinding(
+                    context.FilePath,
+                    "Repository root could not be resolved. Set analyzer configuration key 'repoRoot'.")
+            ]);
+        }
+
+        try
+        {
+            var options = GitHistoryAnalysisOptions.CreateDefault();
+            var file = new GitHistoryFileInput(
+                context.FilePath,
+                context.FileCategory,
+                Encoding.UTF8.GetByteCount(context.Content),
+                context.Language);
+
+            var analysis = AnalyzeRepository(repoRoot, [file], options, cancellationToken);
+            var fileResult = analysis.Files.FirstOrDefault(static x => true);
+            if (fileResult is null)
+            {
+                return Task.FromResult<IEnumerable<Finding>>([]);
+            }
+
+            var findings = BuildFileFindings(context.FilePath, fileResult, options);
+            return Task.FromResult<IEnumerable<Finding>>(findings);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return Task.FromResult<IEnumerable<Finding>>(
+            [
+                CreateAnalyzerUnavailableFinding(
+                    context.FilePath,
+                    $"Git history analysis failed: {ex.GetType().Name}: {ex.Message}")
+            ]);
+        }
+    }
+
+    private static string? ResolveRepositoryRoot(AnalysisContext context)
+    {
+        if (context.Configuration is not null &&
+            context.Configuration.TryGetValue("repoRoot", out var configuredRepoRoot) &&
+            !string.IsNullOrWhiteSpace(configuredRepoRoot) &&
+            Directory.Exists(configuredRepoRoot))
+        {
+            return configuredRepoRoot;
+        }
+
+        try
+        {
+            var candidatePath = Path.IsPathRooted(context.FilePath)
+                ? context.FilePath
+                : Path.GetFullPath(context.FilePath);
+
+            var discovered = Repository.Discover(candidatePath);
+            if (string.IsNullOrWhiteSpace(discovered))
+            {
+                return null;
+            }
+
+            var fullPath = Path.GetFullPath(discovered);
+            var trimmed = fullPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            if (string.Equals(Path.GetFileName(trimmed), ".git", StringComparison.OrdinalIgnoreCase))
+            {
+                return Path.GetDirectoryName(trimmed);
+            }
+
+            return Directory.Exists(trimmed) ? trimmed : Path.GetDirectoryName(trimmed);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static IReadOnlyList<Finding> BuildFileFindings(
+        string filePath,
+        GitFileAnalysisResult result,
+        GitHistoryAnalysisOptions options)
+    {
+        var findings = new List<Finding>();
+
+        if (result.IsOwnershipRisk)
+        {
+            findings.Add(new Finding
+            {
+                RuleId = GitHistoryRuleDefinitions.OwnershipOrphanedKnowledgeRiskRuleId,
+                FilePath = filePath,
+                Line = 1,
+                Column = 1,
+                Message = "Ownership concentration exceeds configured threshold for this file.",
+                Severity = FindingSeverity.Warning,
+                Confidence = FindingConfidence.Medium,
+                Fingerprint = CreateFingerprint("git-history.ownership-risk", filePath),
+                Metadata = BuildMetadata(result, options)
+            });
+        }
+
+        if (result.StaleScore is >= 0.8d)
+        {
+            findings.Add(new Finding
+            {
+                RuleId = GitHistoryRuleDefinitions.StaleFileRiskRuleId,
+                FilePath = filePath,
+                Line = 1,
+                Column = 1,
+                Message = "File appears stale based on recency and category-adjusted stale score.",
+                Severity = FindingSeverity.Info,
+                Confidence = FindingConfidence.Medium,
+                Fingerprint = CreateFingerprint("git-history.stale-file", filePath),
+                Metadata = BuildMetadata(result, options)
+            });
+        }
+
+        if (result.NeverChangedSinceImport)
+        {
+            findings.Add(new Finding
+            {
+                RuleId = GitHistoryRuleDefinitions.NeverChangedSinceImportRuleId,
+                FilePath = filePath,
+                Line = 1,
+                Column = 1,
+                Message = "File has not changed since a likely import commit.",
+                Severity = FindingSeverity.Info,
+                Confidence = FindingConfidence.Medium,
+                Fingerprint = CreateFingerprint("git-history.never-changed-since-import", filePath),
+                Metadata = BuildMetadata(result, options)
+            });
+        }
+
+        return findings;
+    }
+
+    private static Finding CreateAnalyzerUnavailableFinding(string filePath, string message)
+    {
+        return new Finding
+        {
+            RuleId = GitHistoryRuleDefinitions.AnalyzerUnavailableRuleId,
+            FilePath = filePath,
+            Line = 1,
+            Column = 1,
+            Message = message,
+            Severity = FindingSeverity.Info,
+            Confidence = FindingConfidence.Low,
+            Fingerprint = CreateFingerprint("git-history.analyzer-unavailable", filePath, message),
+            Metadata = $$"""{"engine":"git-history","mode":"per-file","status":"unavailable"}"""
+        };
+    }
+
+    private static string CreateFingerprint(params string[] parts)
+    {
+        var payload = string.Join('|', parts.Select(static p => p ?? string.Empty));
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(payload));
+        return Convert.ToHexString(hash).ToLowerInvariant();
+    }
+
+    private static string BuildMetadata(GitFileAnalysisResult result, GitHistoryAnalysisOptions options)
+    {
+        return $$"""{"engine":"git-history","ownershipConcentration":{{result.OwnershipConcentration.ToString("0.000", System.Globalization.CultureInfo.InvariantCulture)}},"ownershipThreshold":{{options.OwnershipConcentrationThreshold.ToString("0.000", System.Globalization.CultureInfo.InvariantCulture)}},"staleScore":{{(result.StaleScore ?? 0d).ToString("0.000", System.Globalization.CultureInfo.InvariantCulture)}},"neverChangedSinceImport":{{result.NeverChangedSinceImport.ToString().ToLowerInvariant()}}}""";
     }
 
     public GitHistoryAnalysisResult AnalyzeRepository(

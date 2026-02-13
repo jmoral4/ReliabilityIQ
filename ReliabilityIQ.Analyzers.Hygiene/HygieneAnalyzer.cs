@@ -956,20 +956,32 @@ public sealed class HygieneAnalyzer
                 using var process = Process.Start(startInfo);
                 if (process is null)
                 {
+                    Console.Error.WriteLine($"git blame failed to start for '{filePath}'.");
                     return null;
                 }
 
                 var output = process.StandardOutput.ReadToEnd();
+                var error = process.StandardError.ReadToEnd();
                 process.WaitForExit();
                 if (process.ExitCode != 0 || string.IsNullOrWhiteSpace(output))
                 {
+                    if (!string.IsNullOrWhiteSpace(error))
+                    {
+                        Console.Error.WriteLine($"git blame failed for '{filePath}': {error.Trim()}");
+                    }
+                    else
+                    {
+                        Console.Error.WriteLine($"git blame failed for '{filePath}' with exit code {process.ExitCode}.");
+                    }
+
                     return null;
                 }
 
                 return ParseBlame(output);
             }
-            catch
+            catch (Exception ex)
             {
+                Console.Error.WriteLine($"git blame failed for '{filePath}': {ex.Message}");
                 return null;
             }
         }

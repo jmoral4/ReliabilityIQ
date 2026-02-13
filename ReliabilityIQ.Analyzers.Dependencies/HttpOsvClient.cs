@@ -35,24 +35,35 @@ public sealed class HttpOsvClient : IOsvClient
             Version = version
         };
 
-        using var response = await _httpClient.PostAsJsonAsync(QueryUri, request, cancellationToken).ConfigureAwait(false);
-        if (!response.IsSuccessStatusCode)
+        try
+        {
+            using var response = await _httpClient.PostAsJsonAsync(QueryUri, request, cancellationToken).ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode)
+            {
+                return [];
+            }
+
+            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+            var payload = await JsonSerializer.DeserializeAsync<OsvQueryResponse>(stream, cancellationToken: cancellationToken).ConfigureAwait(false);
+            if (payload?.Vulns is null || payload.Vulns.Count == 0)
+            {
+                return [];
+            }
+
+            return payload.Vulns.Select(v => new DependencyVulnerability(
+                    AdvisoryId: v.Id ?? "unknown",
+                    Severity: ResolveSeverity(v),
+                    Summary: v.Summary))
+                .ToList();
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch
         {
             return [];
         }
-
-        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-        var payload = await JsonSerializer.DeserializeAsync<OsvQueryResponse>(stream, cancellationToken: cancellationToken).ConfigureAwait(false);
-        if (payload?.Vulns is null || payload.Vulns.Count == 0)
-        {
-            return [];
-        }
-
-        return payload.Vulns.Select(v => new DependencyVulnerability(
-                AdvisoryId: v.Id ?? "unknown",
-                Severity: ResolveSeverity(v),
-                Summary: v.Summary))
-            .ToList();
     }
 
     public async Task<string?> QueryLatestVersionAsync(

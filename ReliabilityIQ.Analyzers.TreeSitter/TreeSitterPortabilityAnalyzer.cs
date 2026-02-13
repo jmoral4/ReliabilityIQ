@@ -55,6 +55,29 @@ public sealed class TreeSitterPortabilityAnalyzer : IAnalyzer
         var inlineSuppressions = ParseInlineSuppressions(lines);
         var fileSuppressions = FileSuppressionSet.Load(context);
         var isTestCode = IsTestCode(context.FilePath);
+        var nativeMissingRuleId = "portability.tree-sitter.native-unavailable";
+
+        if (!nativeReady)
+        {
+            var fingerprint = PortabilityPatternMatcher.CreateFingerprint(nativeMissingRuleId, context.FilePath, 1, 1, "native-unavailable");
+            if (!IsInlineSuppressed(inlineSuppressions, 1, nativeMissingRuleId) &&
+                !fileSuppressions.IsSuppressed(context.FilePath, nativeMissingRuleId, fingerprint))
+            {
+                findings.Add(new Finding
+                {
+                    RuleId = nativeMissingRuleId,
+                    FilePath = context.FilePath,
+                    Line = 1,
+                    Column = 1,
+                    Message = "Native tree-sitter library is unavailable. Analyzer is running in heuristic-only mode; package 'tree-sitter' for native parsing.",
+                    Snippet = lines.Length > 0 ? lines[0].TrimEnd('\r') : null,
+                    Severity = FindingSeverity.Info,
+                    Confidence = FindingConfidence.Low,
+                    Fingerprint = fingerprint,
+                    Metadata = BuildMetadata(context.Language, null, nativeReady, FindingConfidence.Low)
+                });
+            }
+        }
 
         for (var lineIndex = 0; lineIndex < lines.Length; lineIndex++)
         {
@@ -208,7 +231,7 @@ public sealed class TreeSitterPortabilityAnalyzer : IAnalyzer
 
     private static string BuildMetadata(string language, string? token, bool nativeReady, FindingConfidence confidence)
     {
-        return $$"""{"engine":"tree-sitter","language":"{{language}}","astConfirmed":{{(token is not null).ToString().ToLowerInvariant()}},"nativeParserAvailable":{{nativeReady.ToString().ToLowerInvariant()}},"callsite":"{{Escape(token ?? "unknown")}}","confidence":"{{confidence}}"}""";
+        return $$"""{"engine":"tree-sitter-heuristic","language":"{{language}}","nativeParserAvailable":{{nativeReady.ToString().ToLowerInvariant()}},"nativeAstUsed":false,"heuristicCallsiteMatched":{{(token is not null).ToString().ToLowerInvariant()}},"callsite":"{{Escape(token ?? "unknown")}}","confidence":"{{confidence}}"}""";
     }
 
     private static string Escape(string value)
