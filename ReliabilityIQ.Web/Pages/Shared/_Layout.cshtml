@@ -34,6 +34,7 @@
                     <li class="nav-item"><a id="configDriftNav" class="nav-link" href="#">Config Drift</a></li>
                     <li class="nav-item"><a id="dependenciesNav" class="nav-link" href="#">Dependencies</a></li>
                     <li class="nav-item"><a id="magicStringsNav" class="nav-link" href="#">Magic Strings</a></li>
+                    <li class="nav-item"><a id="hygieneNav" class="nav-link" href="#">Hygiene</a></li>
                     <li class="nav-item"><a id="heatmapNav" class="nav-link" href="#">Heatmap</a></li>
                     <li class="nav-item"><a id="churnNav" class="nav-link" href="#">Churn</a></li>
                     <li class="nav-item"><a id="rulesNav" class="nav-link" asp-page="/Rules">Rules</a></li>
@@ -72,6 +73,7 @@
         const configDriftNav = document.getElementById("configDriftNav");
         const dependenciesNav = document.getElementById("dependenciesNav");
         const magicStringsNav = document.getElementById("magicStringsNav");
+        const hygieneNav = document.getElementById("hygieneNav");
         const heatmapNav = document.getElementById("heatmapNav");
         const churnNav = document.getElementById("churnNav");
         const rulesNav = document.getElementById("rulesNav");
@@ -87,6 +89,7 @@
             configDriftNav.classList.toggle("active", /\/run\/[^/]+\/config-drift$/i.test(path));
             dependenciesNav.classList.toggle("active", /\/run\/[^/]+\/dependencies$/i.test(path));
             magicStringsNav.classList.toggle("active", /\/run\/[^/]+\/magic-strings$/i.test(path));
+            hygieneNav.classList.toggle("active", /\/run\/[^/]+\/hygiene$/i.test(path));
             heatmapNav.classList.toggle("active", /\/run\/[^/]+\/heatmap$/i.test(path));
             churnNav.classList.toggle("active", /\/run\/[^/]+\/churn$/i.test(path));
             rulesNav.classList.toggle("active", /^\/rules$/i.test(path));
@@ -106,6 +109,7 @@
                 configDriftNav.setAttribute("href", "#");
                 dependenciesNav.setAttribute("href", "#");
                 magicStringsNav.setAttribute("href", "#");
+                hygieneNav.setAttribute("href", "#");
                 heatmapNav.setAttribute("href", "#");
                 churnNav.setAttribute("href", "#");
                 exportNav.setAttribute("href", "#");
@@ -119,6 +123,7 @@
             configDriftNav.setAttribute("href", `/run/${encoded}/config-drift`);
             dependenciesNav.setAttribute("href", `/run/${encoded}/dependencies`);
             magicStringsNav.setAttribute("href", `/run/${encoded}/magic-strings`);
+            hygieneNav.setAttribute("href", `/run/${encoded}/hygiene`);
             heatmapNav.setAttribute("href", `/run/${encoded}/heatmap`);
             churnNav.setAttribute("href", `/run/${encoded}/churn`);
             exportNav.setAttribute("href", `/run/${encoded}/export`);
@@ -158,6 +163,11 @@
 
             if (/\/run\/[^/]+\/magic-strings$/i.test(path)) {
                 window.location.href = `/run/${encoded}/magic-strings`;
+                return;
+            }
+
+            if (/\/run\/[^/]+\/hygiene$/i.test(path)) {
+                window.location.href = `/run/${encoded}/hygiene`;
                 return;
             }
 

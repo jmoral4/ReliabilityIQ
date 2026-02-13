@@ -54,6 +54,25 @@ else
         </div>
     </div>
 
+    <div class="row g-3 mb-4">
+        <div class="col-12 col-md-6">
+            <div class="card summary-card border-info-subtle">
+                <div class="card-body">
+                    <div class="text-body-secondary small">Tech Debt (TODO/FIXME/HACK)</div>
+                    <div class="display-6 text-info-emphasis">@Model.TechDebtCount</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-12 col-md-6">
+            <div class="card summary-card border-danger-subtle">
+                <div class="card-body">
+                    <div class="text-body-secondary small">Async/Thread Issues</div>
+                    <div class="display-6 text-danger">@Model.AsyncIssueCount</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <div class="row g-3">
         <div class="col-12 col-lg-6">
             <div class="card h-100">

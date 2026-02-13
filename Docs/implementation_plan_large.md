@@ -670,7 +670,7 @@ Below is a **30-phase roadmap** organized as an initial MVP (Phases 1–2), foll
 
 ---
 
-## Phase 13 — Incident Association Scanner *(Agent 1)*
+## Phase 13 — Incident Association Scanner *(Agent 1)*   [SKIP]
 
 **Goal:** Implement the incident-to-code mapping system with adapter-based providers and linking strategies.
 
@@ -728,7 +728,7 @@ Below is a **30-phase roadmap** organized as an initial MVP (Phases 1–2), foll
 
 ---
 
-## Phase 14 — Incident Correlation & Composite Risk UI *(Agent 2)*
+## Phase 14 — Incident Correlation & Composite Risk UI *(Agent 2)*  [SKIP]
 
 **Goal:** Visualize incident associations, and introduce the composite risk scoring dashboard.
 
@@ -781,7 +781,7 @@ Below is a **30-phase roadmap** organized as an initial MVP (Phases 1–2), foll
 
 ---
 
-## Phase 15 — Incremental Scanning & Performance *(Agent 1)*
+## Phase 15 — Incremental Scanning & Performance *(Agent 1)* [SKIP]
 
 **Goal:** Implement scan caching for incremental runs, channel-based parallelism, and performance optimizations.
 
@@ -839,7 +839,7 @@ Below is a **30-phase roadmap** organized as an initial MVP (Phases 1–2), foll
 
 ---
 
-## Phase 16 — Run Trends & Performance Dashboard UI *(Agent 2)*
+## Phase 16 — Run Trends & Performance Dashboard UI *(Agent 2)* [SKIP]
 
 **Goal:** Add run-over-run trend analysis, enhanced run comparison, and scan performance visibility.
 
@@ -878,7 +878,7 @@ Below is a **30-phase roadmap** organized as an initial MVP (Phases 1–2), foll
 
 ---
 
-## Phase 17 — Secrets & Credential Hygiene Scanner *(Agent 1)*
+## Phase 17 — Secrets & Credential Hygiene Scanner *(Agent 1)* [SKIP]
 
 **Goal:** Detect inline secrets, API keys, connection strings, SAS tokens, and certificate blobs in code and config.
 
@@ -936,7 +936,7 @@ Below is a **30-phase roadmap** organized as an initial MVP (Phases 1–2), foll
 
 ---
 
-## Phase 18 — Secrets UI *(Agent 2)*
+## Phase 18 — Secrets UI *(Agent 2)*    [SKIP]
 
 **Goal:** Present secrets findings with appropriate security UX.
 
@@ -1047,7 +1047,7 @@ Below is a **30-phase roadmap** organized as an initial MVP (Phases 1–2), foll
 
 ---
 
-## Phase 21 — Error Handling & Resilience Scanners *(Agent 1)*
+## Phase 21 — Error Handling & Resilience Scanners *(Agent 1)* [SKIP]
 
 **Goal:** Detect error handling anti-patterns and missing resilience policies.
 
@@ -1095,7 +1095,7 @@ Below is a **30-phase roadmap** organized as an initial MVP (Phases 1–2), foll
 
 ---
 
-## Phase 22 — Error Handling & Resilience UI *(Agent 2)*
+## Phase 22 — Error Handling & Resilience UI *(Agent 2)* [SKIP]
 
 **Goal:** Present error handling and resilience findings.
 
@@ -1121,7 +1121,7 @@ Below is a **30-phase roadmap** organized as an initial MVP (Phases 1–2), foll
 
 ---
 
-## Phase 23 — Structural Analysis Scanners (Circular Deps + Complexity) *(Agent 1)*
+## Phase 23 — Structural Analysis Scanners (Circular Deps + Complexity) *(Agent 1)*  [SKIP]
 
 **Goal:** Detect circular dependencies and compute cyclomatic complexity.
 
@@ -1160,7 +1160,7 @@ Below is a **30-phase roadmap** organized as an initial MVP (Phases 1–2), foll
 
 ---
 
-## Phase 24 — Structural Analysis UI *(Agent 2)*
+## Phase 24 — Structural Analysis UI *(Agent 2)*   [SKIP]
 
 **Goal:** Visualize dependency graphs and complexity metrics.
 

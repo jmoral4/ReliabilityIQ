@@ -1,0 +1,309 @@
+@page "/run/{runId}/hygiene"
+@model ReliabilityIQ.Web.Pages.Run.HygieneModel
+@{
+    ViewData["Title"] = "Code Hygiene";
+}
+
+@if (Model.Run is null)
+{
+    <div class="alert alert-warning" role="alert">Run not found.</div>
+}
+else
+{
+    <section class="mb-3">
+        <h1 class="h3 mb-1">Code Hygiene</h1>
+        <div class="small text-body-secondary">
+            <span class="font-monospace">@Model.Run.RunId</span>
+            <span class="mx-2">|</span>
+            <span class="font-monospace">@Model.Run.RepoRoot</span>
+            <span class="mx-2">|</span>
+            <a asp-page="/Run/Findings" asp-route-runId="@Model.RunId" class="link-secondary">Open in Findings</a>
+        </div>
+    </section>
+
+    <div class="row g-3 mb-3">
+        <div class="col-12 col-md-4">
+            <div class="card h-100 border-warning-subtle">
+                <div class="card-body">
+                    <div class="text-body-secondary small">Feature Flag Findings</div>
+                    <div class="display-6" id="featureFlagCount">0</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-12 col-md-4">
+            <div class="card h-100 border-info-subtle">
+                <div class="card-body">
+                    <div class="text-body-secondary small">Tech Debt Findings</div>
+                    <div class="display-6" id="techDebtCount">0</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-12 col-md-4">
+            <div class="card h-100 border-danger-subtle">
+                <div class="card-body">
+                    <div class="text-body-secondary small">Async/Thread Findings</div>
+                    <div class="display-6" id="asyncCount">0</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <ul class="nav nav-tabs mb-3" id="hygieneTabs" role="tablist">
+        <li class="nav-item" role="presentation">
+            <button class="nav-link active" id="feature-flags-tab" data-bs-toggle="tab" data-bs-target="#feature-flags-pane" type="button" role="tab" aria-controls="feature-flags-pane" aria-selected="true">Feature Flags</button>
+        </li>
+        <li class="nav-item" role="presentation">
+            <button class="nav-link" id="tech-debt-tab" data-bs-toggle="tab" data-bs-target="#tech-debt-pane" type="button" role="tab" aria-controls="tech-debt-pane" aria-selected="false">Tech Debt</button>
+        </li>
+        <li class="nav-item" role="presentation">
+            <button class="nav-link" id="async-tab" data-bs-toggle="tab" data-bs-target="#async-pane" type="button" role="tab" aria-controls="async-pane" aria-selected="false">Async/Thread Safety</button>
+        </li>
+    </ul>
+
+    <div class="tab-content" id="hygieneTabContent">
+        <div class="tab-pane fade show active" id="feature-flags-pane" role="tabpanel" aria-labelledby="feature-flags-tab" tabindex="0">
+            <div class="card">
+                <div class="card-body">
+                    <div class="table-responsive">
+                        <table class="table table-sm table-striped align-middle mb-0">
+                            <thead>
+                            <tr>
+                                <th>Flag</th>
+                                <th>Refs</th>
+                                <th>Age (Days)</th>
+                                <th>Status</th>
+                                <th>Locations</th>
+                            </tr>
+                            </thead>
+                            <tbody id="featureFlagsBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="tab-pane fade" id="tech-debt-pane" role="tabpanel" aria-labelledby="tech-debt-tab" tabindex="0">
+            <div class="card mb-3">
+                <div class="card-body">
+                    <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
+                        <h2 class="h6 text-uppercase text-body-secondary mb-0">Tech Debt Aging</h2>
+                        <div class="d-flex align-items-center gap-2">
+                            <label class="form-label mb-0 small" for="keywordFilter">Keyword</label>
+                            <select id="keywordFilter" class="form-select form-select-sm">
+                                <option value="">All</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="hygiene-chart-wrap">
+                        <canvas id="techDebtAgingChart" height="120"></canvas>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-body">
+                    <div class="table-responsive">
+                        <table class="table table-sm table-striped align-middle mb-0">
+                            <thead>
+                            <tr>
+                                <th>Keyword</th>
+                                <th>Age (Days)</th>
+                                <th>Author</th>
+                                <th>Location</th>
+                                <th>Message</th>
+                            </tr>
+                            </thead>
+                            <tbody id="techDebtBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="tab-pane fade" id="async-pane" role="tabpanel" aria-labelledby="async-tab" tabindex="0">
+            <div class="card">
+                <div class="card-body">
+                    <div class="table-responsive">
+                        <table class="table table-sm table-striped align-middle mb-0">
+                            <thead>
+                            <tr>
+                                <th>Pattern Type</th>
+                                <th>File</th>
+                                <th>Line</th>
+                                <th>Explanation</th>
+                            </tr>
+                            </thead>
+                            <tbody id="asyncBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+@section Scripts
+{
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.6/dist/chart.umd.min.js" crossorigin="anonymous"></script>
+    <script>
+        function escapeHtml(value) {
+            if (!value) return "";
+            return String(value)
+                .replaceAll("&", "&amp;")
+                .replaceAll("<", "&lt;")
+                .replaceAll(">", "&gt;")
+                .replaceAll('"', "&quot;")
+                .replaceAll("'", "&#39;");
+        }
+
+        function renderFeatureFlags(rows) {
+            const body = document.getElementById("featureFlagsBody");
+            if (!Array.isArray(rows) || rows.length === 0) {
+                body.innerHTML = '<tr><td colspan="5" class="text-body-secondary">No feature-flag hygiene findings for this run.</td></tr>';
+                return;
+            }
+
+            body.innerHTML = rows.map(row => {
+                const statusClass = row.status === "Dead"
+                    ? "text-bg-danger-subtle text-danger-emphasis"
+                    : "text-bg-warning-subtle text-warning-emphasis";
+                const locations = (row.locations || [])
+                    .map(location => `<div class="font-monospace small">${escapeHtml(location.filePath)}:${Number(location.line || 0)}</div>`)
+                    .join("");
+                return `<tr>
+                    <td class="font-monospace">${escapeHtml(row.flagName || "")}</td>
+                    <td>${Number(row.referenceCount || 0)}</td>
+                    <td>${row.ageDays ?? "-"}</td>
+                    <td><span class="badge ${statusClass}">${escapeHtml(row.status || "")}</span></td>
+                    <td class="hygiene-locations">${locations}</td>
+                </tr>`;
+            }).join("");
+        }
+
+        function buildKeywordFilter(rows) {
+            const select = document.getElementById("keywordFilter");
+            const existing = select.value;
+            const keywords = Array.from(new Set((rows || [])
+                .map(row => (row.keyword || "").toUpperCase())
+                .filter(value => value.length > 0)))
+                .sort((a, b) => a.localeCompare(b));
+
+            select.innerHTML = '<option value="">All</option>';
+            for (const keyword of keywords) {
+                const option = document.createElement("option");
+                option.value = keyword;
+                option.textContent = keyword;
+                select.appendChild(option);
+            }
+
+            if (keywords.includes(existing)) {
+                select.value = existing;
+            }
+        }
+
+        function renderTechDebt(rows) {
+            const selectedKeyword = document.getElementById("keywordFilter").value;
+            const filtered = !selectedKeyword
+                ? rows
+                : rows.filter(row => (row.keyword || "").toUpperCase() === selectedKeyword);
+
+            const body = document.getElementById("techDebtBody");
+            if (!Array.isArray(filtered) || filtered.length === 0) {
+                body.innerHTML = '<tr><td colspan="5" class="text-body-secondary">No tech-debt findings for current filter.</td></tr>';
+                return;
+            }
+
+            body.innerHTML = filtered.map(row => `<tr>
+                <td><span class="badge text-bg-secondary">${escapeHtml(row.keyword || "")}</span></td>
+                <td>${row.ageDays ?? "-"}</td>
+                <td>${escapeHtml(row.author || "unknown")}</td>
+                <td class="font-monospace small">${escapeHtml(row.filePath || "")}:${Number(row.line || 0)}</td>
+                <td>${escapeHtml(row.message || "")}</td>
+            </tr>`).join("");
+        }
+
+        function renderAsync(rows) {
+            const body = document.getElementById("asyncBody");
+            if (!Array.isArray(rows) || rows.length === 0) {
+                body.innerHTML = '<tr><td colspan="4" class="text-body-secondary">No async/thread-safety findings for this run.</td></tr>';
+                return;
+            }
+
+            body.innerHTML = rows.map(row => `<tr>
+                <td class="font-monospace">${escapeHtml(row.patternType || row.ruleId || "")}</td>
+                <td class="font-monospace small">${escapeHtml(row.filePath || "")}</td>
+                <td>${Number(row.line || 0)}</td>
+                <td>${escapeHtml(row.explanation || "")}</td>
+            </tr>`).join("");
+        }
+
+        function renderAgingChart(buckets) {
+            const canvas = document.getElementById("techDebtAgingChart");
+            if (!canvas) {
+                return;
+            }
+
+            const labels = (buckets || []).map(bucket => bucket.label);
+            const data = (buckets || []).map(bucket => Number(bucket.count || 0));
+
+            new Chart(canvas, {
+                type: "bar",
+                data: {
+                    labels,
+                    datasets: [{
+                        label: "TODO/FIXME/HACK count",
+                        data,
+                        borderWidth: 1,
+                        backgroundColor: "#4e79a7"
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            ticks: {
+                                precision: 0
+                            }
+                        }
+                    },
+                    plugins: {
+                        legend: {
+                            display: false
+                        }
+                    }
+                }
+            });
+        }
+
+        (async function () {
+            const runId = "@Model.RunId";
+            const response = await fetch(`/api/run/${encodeURIComponent(runId)}/hygiene`, { headers: { "Accept": "application/json" } });
+            if (!response.ok) {
+                document.getElementById("featureFlagsBody").innerHTML = '<tr><td colspan="5" class="text-danger">Failed to load hygiene data.</td></tr>';
+                document.getElementById("techDebtBody").innerHTML = '<tr><td colspan="5" class="text-danger">Failed to load hygiene data.</td></tr>';
+                document.getElementById("asyncBody").innerHTML = '<tr><td colspan="4" class="text-danger">Failed to load hygiene data.</td></tr>';
+                return;
+            }
+
+            const payload = await response.json();
+            const featureFlags = payload.featureFlags || [];
+            const techDebt = payload.techDebt || [];
+            const asyncIssues = payload.asyncIssues || [];
+            const dashboard = payload.dashboard || {};
+
+            document.getElementById("featureFlagCount").textContent = String(featureFlags.length);
+            document.getElementById("techDebtCount").textContent = String(Number(dashboard.techDebtCount || techDebt.length));
+            document.getElementById("asyncCount").textContent = String(Number(dashboard.asyncIssueCount || asyncIssues.length));
+
+            renderFeatureFlags(featureFlags);
+            buildKeywordFilter(techDebt);
+            renderTechDebt(techDebt);
+            renderAsync(asyncIssues);
+            renderAgingChart(payload.techDebtAging || []);
+
+            document.getElementById("keywordFilter").addEventListener("change", () => renderTechDebt(techDebt));
+        })();
+    </script>
+}

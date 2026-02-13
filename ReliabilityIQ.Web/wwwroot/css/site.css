@@ -102,6 +102,15 @@ pre {
     border-top: 1px solid #d3deef;
 }
 
+.hygiene-locations {
+    min-width: 18rem;
+}
+
+.hygiene-chart-wrap {
+    position: relative;
+    min-height: 14rem;
+}
+
 @media (max-width: 767px) {
     .timeline-item {
         grid-template-columns: 1fr;

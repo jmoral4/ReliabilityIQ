@@ -4,6 +4,7 @@ using ReliabilityIQ.Web.ConfigDrift;
 using ReliabilityIQ.Web.Data;
 using ReliabilityIQ.Web.Dependencies;
 using ReliabilityIQ.Web.Exports;
+using ReliabilityIQ.Web.Hygiene;
 using ReliabilityIQ.Web.MagicStrings;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -524,6 +525,75 @@ app.MapGet("/api/run/{runId}/dependencies", async (
             framework = item.Framework,
             reason = item.Reason
         })
+    });
+});
+
+app.MapGet("/api/run/{runId}/hygiene", async (
+    string runId,
+    SqliteResultsQueries queries,
+    CancellationToken cancellationToken) =>
+{
+    var run = await queries.GetRunById(runId, cancellationToken).ConfigureAwait(false);
+    if (run is null)
+    {
+        return Results.NotFound();
+    }
+
+    var hygieneTask = queries.GetFindingsByRulePrefix(runId, "hygiene.", includeSuppressed: false, cancellationToken);
+    var asyncTask = queries.GetFindingsByRulePrefix(runId, "async.", includeSuppressed: false, cancellationToken);
+    var threadTask = queries.GetFindingsByRulePrefix(runId, "thread.", includeSuppressed: false, cancellationToken);
+
+    await Task.WhenAll(hygieneTask, asyncTask, threadTask).ConfigureAwait(false);
+    var projection = HygieneProjection.Build(hygieneTask.Result, asyncTask.Result, threadTask.Result);
+
+    return Results.Ok(new
+    {
+        featureFlags = projection.FeatureFlags.Select(item => new
+        {
+            ruleId = item.RuleId,
+            flagName = item.FlagName,
+            referenceCount = item.ReferenceCount,
+            definitionCount = item.DefinitionCount,
+            ageDays = item.AgeDays,
+            status = item.Status,
+            filePath = item.FilePath,
+            line = item.Line,
+            message = item.Message,
+            locations = item.Locations.Select(location => new
+            {
+                filePath = location.FilePath,
+                line = location.Line
+            })
+        }),
+        techDebt = projection.TechDebt.Select(item => new
+        {
+            findingId = item.FindingId,
+            ruleId = item.RuleId,
+            keyword = item.Keyword,
+            ageDays = item.AgeDays,
+            author = item.Author,
+            filePath = item.FilePath,
+            line = item.Line,
+            message = item.Message
+        }),
+        asyncIssues = projection.AsyncIssues.Select(item => new
+        {
+            ruleId = item.RuleId,
+            patternType = item.PatternType,
+            filePath = item.FilePath,
+            line = item.Line,
+            explanation = item.Explanation
+        }),
+        techDebtAging = projection.TechDebtAging.Select(item => new
+        {
+            label = item.Label,
+            count = item.Count
+        }),
+        dashboard = new
+        {
+            techDebtCount = projection.TechDebtCount,
+            asyncIssueCount = projection.AsyncIssueCount
+        }
     });
 });
 

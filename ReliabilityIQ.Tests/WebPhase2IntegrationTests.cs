@@ -42,6 +42,7 @@ public sealed class WebPhase2IntegrationTests : IDisposable
         var configDrift = await client.GetAsync($"/run/{Uri.EscapeDataString(_runId)}/config-drift");
         var dependencies = await client.GetAsync($"/run/{Uri.EscapeDataString(_runId)}/dependencies");
         var magicStrings = await client.GetAsync($"/run/{Uri.EscapeDataString(_runId)}/magic-strings");
+        var hygiene = await client.GetAsync($"/run/{Uri.EscapeDataString(_runId)}/hygiene");
         var heatmap = await client.GetAsync($"/run/{Uri.EscapeDataString(_runId)}/heatmap");
         var churn = await client.GetAsync($"/run/{Uri.EscapeDataString(_runId)}/churn");
         var suppressions = await client.GetAsync($"/run/{Uri.EscapeDataString(_runId)}/suppressions");
@@ -57,6 +58,7 @@ public sealed class WebPhase2IntegrationTests : IDisposable
         Assert.Equal(HttpStatusCode.OK, configDrift.StatusCode);
         Assert.Equal(HttpStatusCode.OK, dependencies.StatusCode);
         Assert.Equal(HttpStatusCode.OK, magicStrings.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, hygiene.StatusCode);
         Assert.Equal(HttpStatusCode.OK, heatmap.StatusCode);
         Assert.Equal(HttpStatusCode.OK, churn.StatusCode);
         Assert.Equal(HttpStatusCode.OK, suppressions.StatusCode);
@@ -334,7 +336,8 @@ public sealed class WebPhase2IntegrationTests : IDisposable
         Assert.True(first.TryGetProperty("configSet", out _));
         Assert.True(first.TryGetProperty("key", out _));
         Assert.True(first.TryGetProperty("cells", out var cells));
-        Assert.True(cells.EnumerateArray().Any(cell => cell.GetProperty("status").GetString() == "missing"));
+        var statuses = cells.EnumerateArray().Select(cell => cell.GetProperty("status").GetString()).ToList();
+        Assert.Contains("missing", statuses);
     }
 
     [Fact]
@@ -392,6 +395,50 @@ public sealed class WebPhase2IntegrationTests : IDisposable
         Assert.True(detailsRoot.GetProperty("fileCount").GetInt64() >= 1);
         Assert.Equal(JsonValueKind.Array, detailsRoot.GetProperty("topFiles").ValueKind);
         Assert.Equal(JsonValueKind.Array, detailsRoot.GetProperty("topRules").ValueKind);
+    }
+
+    [Fact]
+    public async Task HygieneApi_ReturnsFeatureFlagsTechDebtAsyncAndAging()
+    {
+        await SeedDatabaseAsync();
+
+        using var factory = new TestWebApplicationFactory(_dbPath);
+        using var client = factory.CreateClient();
+
+        var response = await client.GetAsync($"/api/run/{Uri.EscapeDataString(_runId)}/hygiene");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        var root = json.RootElement;
+
+        var featureFlags = root.GetProperty("featureFlags");
+        var techDebt = root.GetProperty("techDebt");
+        var asyncIssues = root.GetProperty("asyncIssues");
+        var aging = root.GetProperty("techDebtAging");
+        var dashboard = root.GetProperty("dashboard");
+
+        Assert.True(featureFlags.GetArrayLength() >= 2);
+        Assert.True(techDebt.GetArrayLength() >= 3);
+        Assert.True(asyncIssues.GetArrayLength() >= 2);
+        Assert.Equal(5, aging.GetArrayLength());
+        Assert.True(dashboard.GetProperty("techDebtCount").GetInt32() >= 3);
+        Assert.True(dashboard.GetProperty("asyncIssueCount").GetInt32() >= 2);
+
+        var firstFlag = featureFlags.EnumerateArray().First();
+        Assert.True(firstFlag.TryGetProperty("flagName", out _));
+        Assert.True(firstFlag.TryGetProperty("referenceCount", out _));
+        Assert.True(firstFlag.TryGetProperty("status", out _));
+        Assert.True(firstFlag.TryGetProperty("locations", out _));
+
+        var firstDebt = techDebt.EnumerateArray().First();
+        Assert.True(firstDebt.TryGetProperty("keyword", out _));
+        Assert.True(firstDebt.TryGetProperty("author", out _));
+        Assert.True(firstDebt.TryGetProperty("ageDays", out _));
+
+        var firstAsync = asyncIssues.EnumerateArray().First();
+        Assert.True(firstAsync.TryGetProperty("patternType", out _));
+        Assert.True(firstAsync.TryGetProperty("line", out _));
+        Assert.True(firstAsync.TryGetProperty("explanation", out _));
     }
 
     [Fact]
@@ -706,6 +753,104 @@ public sealed class WebPhase2IntegrationTests : IDisposable
                 Confidence = FindingConfidence.High,
                 Fingerprint = "fp-web-11",
                 Metadata = """{"engine":"deps","type":"framework","framework":"Python 3.6","reason":"Out-of-support Python runtime."}"""
+            },
+            new()
+            {
+                RunId = _runId,
+                RuleId = "hygiene.stale_feature_flag",
+                FilePath = "src/program.cs",
+                Line = 61,
+                Column = 13,
+                Message = "Feature flag 'legacy_checkout' appears stale (3 reference(s), last changed ~260 days ago).",
+                Snippet = "IsEnabled(\"legacy_checkout\")",
+                Severity = FindingSeverity.Warning,
+                Confidence = FindingConfidence.High,
+                Fingerprint = "fp-web-12",
+                Metadata = """{"engine":"hygiene","category":"feature-flag","flagName":"legacy_checkout","referenceCount":3,"definitionCount":1,"introducedDaysAgo":420,"lastChangedDaysAgo":260,"locations":[{"FilePath":"src/program.cs","Line":61},{"FilePath":"src/payments/gateway.cs","Line":22}]}"""
+            },
+            new()
+            {
+                RunId = _runId,
+                RuleId = "hygiene.dead_feature_flag",
+                FilePath = "src/program.cs",
+                Line = 88,
+                Column = 9,
+                Message = "Feature flag 'dark_launch_old' appears dead (definition found, no runtime references detected).",
+                Snippet = "dark_launch_old",
+                Severity = FindingSeverity.Warning,
+                Confidence = FindingConfidence.Medium,
+                Fingerprint = "fp-web-13",
+                Metadata = """{"engine":"hygiene","category":"feature-flag","flagName":"dark_launch_old","referenceCount":0,"definitionCount":1,"locations":[{"FilePath":"src/program.cs","Line":88}]}"""
+            },
+            new()
+            {
+                RunId = _runId,
+                RuleId = "hygiene.todo_old",
+                FilePath = "src/program.cs",
+                Line = 7,
+                Column = 1,
+                Message = "TODO comment indicates tech debt (age ~420 days).",
+                Snippet = "// TODO: replace with rollout config",
+                Severity = FindingSeverity.Warning,
+                Confidence = FindingConfidence.High,
+                Fingerprint = "fp-web-14",
+                Metadata = """{"engine":"hygiene","category":"todo","keyword":"TODO","ageDays":420,"author":"alice@example.com"}"""
+            },
+            new()
+            {
+                RunId = _runId,
+                RuleId = "hygiene.fixme",
+                FilePath = "src/payments/gateway.cs",
+                Line = 14,
+                Column = 1,
+                Message = "FIXME comment indicates tech debt (age ~120 days).",
+                Snippet = "// FIXME: retry policy is brittle",
+                Severity = FindingSeverity.Warning,
+                Confidence = FindingConfidence.High,
+                Fingerprint = "fp-web-15",
+                Metadata = """{"engine":"hygiene","category":"todo","keyword":"FIXME","ageDays":120,"author":"bob@example.com"}"""
+            },
+            new()
+            {
+                RunId = _runId,
+                RuleId = "hygiene.hack",
+                FilePath = "src/domain/status.cs",
+                Line = 5,
+                Column = 1,
+                Message = "HACK comment indicates tech debt (age ~12 days).",
+                Snippet = "// HACK: temporary state mapping",
+                Severity = FindingSeverity.Warning,
+                Confidence = FindingConfidence.High,
+                Fingerprint = "fp-web-16",
+                Metadata = """{"engine":"hygiene","category":"todo","keyword":"HACK","ageDays":12,"author":"carol@example.com"}"""
+            },
+            new()
+            {
+                RunId = _runId,
+                RuleId = "async.sync_over_async",
+                FilePath = "src/program.cs",
+                Line = 45,
+                Column = 20,
+                Message = "Sync-over-async call detected inside an async C# method.",
+                Snippet = "task.Result",
+                Severity = FindingSeverity.Warning,
+                Confidence = FindingConfidence.High,
+                Fingerprint = "fp-web-17",
+                Metadata = """{"engine":"hygiene","category":"async","pattern":"sync-over-async","method":"RunAsync"}"""
+            },
+            new()
+            {
+                RunId = _runId,
+                RuleId = "thread.bad_lock_target",
+                FilePath = "src/program.cs",
+                Line = 48,
+                Column = 17,
+                Message = "Lock target uses string literal.",
+                Snippet = "lock(\"global-lock\")",
+                Severity = FindingSeverity.Error,
+                Confidence = FindingConfidence.High,
+                Fingerprint = "fp-web-18",
+                Metadata = """{"engine":"hygiene","category":"thread","pattern":"lock-string-literal","target":"string-literal"}"""
             }
         };
 
@@ -722,6 +867,13 @@ public sealed class WebPhase2IntegrationTests : IDisposable
             new("deps.vulnerable.high", "Dependency Vulnerability High", FindingSeverity.Warning, "Dependency has a known high-severity vulnerability."),
             new("deps.unpinned_version", "Unpinned Dependency Version", FindingSeverity.Warning, "Dependency is not pinned to an exact version."),
             new("deps.eol.framework", "EOL Framework", FindingSeverity.Error, "Out-of-support framework/runtime detected."),
+            new("hygiene.stale_feature_flag", "Stale Feature Flag", FindingSeverity.Warning, "Feature flag appears stale based on age and lack of recent changes."),
+            new("hygiene.dead_feature_flag", "Dead Feature Flag", FindingSeverity.Warning, "Feature flag appears defined but has no observed runtime references."),
+            new("hygiene.todo_old", "Old TODO Tech Debt", FindingSeverity.Warning, "TODO-like comment is older than configured age threshold."),
+            new("hygiene.fixme", "FIXME Tech Debt", FindingSeverity.Warning, "FIXME comment indicates acknowledged defect or risky behavior."),
+            new("hygiene.hack", "HACK Tech Debt", FindingSeverity.Warning, "HACK/WORKAROUND/TEMP marker indicates admitted technical debt."),
+            new("async.sync_over_async", "Sync-over-Async Anti-pattern", FindingSeverity.Warning, "Synchronous wait on async operation may cause deadlocks or thread starvation."),
+            new("thread.bad_lock_target", "Bad Lock Target", FindingSeverity.Error, "Lock target is unsafe and can cause deadlocks."),
             new("custom.dormant.rule", "Dormant Custom Rule", FindingSeverity.Info, "No findings expected for this test rule.")
         };
 
