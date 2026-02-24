@@ -24,7 +24,7 @@ public sealed class SqliteResultsWriter
             Mode = SqliteOpenMode.ReadWriteCreate,
             Cache = SqliteCacheMode.Shared,
             DefaultTimeout = BusyTimeoutMilliseconds / 1000,
-            Pooling = true
+            Pooling = false
         }.ToString();
         _schemaManager = schemaManager ?? new SqliteSchemaManager();
     }

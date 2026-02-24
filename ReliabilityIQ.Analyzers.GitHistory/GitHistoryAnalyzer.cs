@@ -207,16 +207,15 @@ public sealed class GitHistoryAnalyzer : IAnalyzer
         ArgumentNullException.ThrowIfNull(files);
         ArgumentNullException.ThrowIfNull(options);
 
-        var cacheKey = BuildCacheKey(repoRoot, options);
-        if (Cache.TryGetValue(cacheKey, out var cached))
-        {
-            return cached;
-        }
-
         var normalizedInputs = files
             .Select(file => file with { FilePath = NormalizePath(file.FilePath) })
             .DistinctBy(file => file.FilePath, StringComparer.OrdinalIgnoreCase)
             .ToArray();
+        var cacheKey = BuildCacheKey(repoRoot, options, normalizedInputs);
+        if (Cache.TryGetValue(cacheKey, out var cached))
+        {
+            return cached;
+        }
 
         using var repository = new Repository(repoRoot);
         var now = DateTimeOffset.UtcNow;
@@ -450,11 +449,19 @@ public sealed class GitHistoryAnalyzer : IAnalyzer
         return markers;
     }
 
-    private static string BuildCacheKey(string repoRoot, GitHistoryAnalysisOptions options)
+    private static string BuildCacheKey(
+        string repoRoot,
+        GitHistoryAnalysisOptions options,
+        IReadOnlyList<GitHistoryFileInput> files)
     {
         using var repository = new Repository(repoRoot);
         var sha = repository.Head?.Tip?.Sha ?? "no-head";
-        return $"{Path.GetFullPath(repoRoot)}|{sha}|{options.SinceDays}|{options.IncludeDiffStats}";
+        var filesKey = string.Join('|', files
+            .OrderBy(file => file.FilePath, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(file => file.Category)
+            .Select(file => $"{file.FilePath}:{(int)file.Category}"));
+        var filesHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(filesKey))).ToLowerInvariant();
+        return $"{Path.GetFullPath(repoRoot)}|{sha}|{options.SinceDays}|{options.IncludeDiffStats}|{filesHash}";
     }
 
     private static bool TryResolveTrackedAccumulator(

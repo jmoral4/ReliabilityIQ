@@ -96,7 +96,8 @@ public sealed class RepoDiscoveryAndPersistenceTests : IDisposable
 
         await using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
         {
-            DataSource = dbPath
+            DataSource = dbPath,
+            Pooling = false
         }.ToString());
         await connection.OpenAsync();
 
@@ -112,6 +113,26 @@ public sealed class RepoDiscoveryAndPersistenceTests : IDisposable
         Assert.Equal(1, findingCount);
         Assert.Equal(1, ruleCount);
         Assert.Equal(2, indexCount);
+    }
+
+    [Fact]
+    public async Task SqliteResultsWriter_AllowsImmediateDatabaseDeletionAfterWrite()
+    {
+        var dbPath = Path.Combine(_tempDir, "delete-immediately.db");
+        var writer = new SqliteResultsWriter(dbPath);
+        var run = new ScanRun(
+            RunId: "run-delete",
+            RepoRoot: "/repo",
+            CommitSha: "abc123",
+            StartedAt: DateTimeOffset.UtcNow.AddMinutes(-1),
+            EndedAt: DateTimeOffset.UtcNow,
+            ToolVersion: "0.1.0",
+            ConfigHash: null);
+
+        await writer.WriteAsync(run, [], [], []);
+
+        File.Delete(dbPath);
+        Assert.False(File.Exists(dbPath));
     }
 
     public void Dispose()
